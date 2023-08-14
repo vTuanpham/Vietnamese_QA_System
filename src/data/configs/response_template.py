@@ -11,85 +11,126 @@ from dataclasses import dataclass
 from src.utils.utils import set_seed
 
 
-NO_ANS_RESPONSE1 = f"Tôi xin lỗi, tôi không thể tìm thấy câu trả lời cho câu hỏi '[QUESTION]'," \
-                   f" trong dữ liệu của tôi không chứa câu trả lời cho vấn đề này." \
-                   f" Bạn có thể hỏi cụ thể hơn hoặc hỏi tôi một câu hỏi khác được không ?"
-NO_ANS_RESPONSE2 = f"Tôi không tìm thấy đáp án cho câu trả lời của bạn trong database," \
-                   f" bạn có thể đưa cho tôi thêm các tài liệu liên quan để tôi bổ sung được không ?"
-NO_ANS_RESPONSE3 = f"Tôi không thể trả lời câu hỏi của bạn, có thể do dữ liệu của tôi trong database bị thiếu hụt." \
-                   f" Bạn có thể hỏi tôi một câu hỏi khác được không ?"
-NO_ANS_RESPONSE4 = f"Câu trả lời không tìm thấy trong dữ liệu hiện có của tôi," \
-                   f" bạn có thể hỏi tôi một câu hỏi khác hoặc cung cấp thêm context cho tôi được không ?"
-NO_ANS_RESPONSE5 = f"Xin lỗi, tôi không có thông tin cần thiết để trả lời câu hỏi '[QUESTION]'." \
-                   f" Có thể bạn muốn thử đặt câu hỏi khác hoặc cung cấp thêm context để tôi hiểu rõ hơn."
-NO_ANS_RESPONSE6 = f"Xin lỗi, nhưng tôi không thể cung cấp câu trả lời cho câu hỏi này '[QUESTION]'." \
-                   f" Bạn có thể thử đặt câu hỏi khác cho tôi không?"
-NO_ANS_RESPONSE7 = f"Tôi rất tiếc, nhưng tôi không có thông tin cụ thể nào liên quan đến câu hỏi '[QUESTION]'." \
-                   f" Có câu hỏi khác nào tôi có thể giúp đỡ?"
-NO_ANS_RESPONSE8 = f"Câu trả lời cho câu hỏi này '[QUESTION]' không có trong database của tôi." \
+NO_ANS_RESPONSE1 = f"Tôi không thể tìm thấy câu trả lời cho câu hỏi hoặc yêu cầu '[QUESTION]' của bạn." \
+                   f" Bạn có thể hỏi cụ thể hơn hoặc hỏi tôi một câu hỏi hoặc yêu cầu khác được không?"
+
+NO_ANS_RESPONSE2 = f"Tôi không tìm thấy đáp án cho câu trả lời của bạn trong database." \
+                   f" Bạn có thể đưa cho tôi thêm các tài liệu liên quan để tôi bổ sung được không?"
+
+NO_ANS_RESPONSE3 = f"Tôi không thể trả lời câu hỏi hoặc yêu cầu của bạn, có thể do dữ liệu của tôi trong database bị thiếu hụt."    \
+                   f" Bạn có thể hỏi tôi một câu hỏi hoặc yêu cầu khác được không?"
+
+NO_ANS_RESPONSE4 = f"Câu trả lời không tìm thấy trong dữ liệu hiện có của tôi." \
+                   f" Bạn có thể hỏi tôi một câu hỏi hoặc yêu cầu khác hoặc cung cấp thêm context cho tôi được không?"
+
+NO_ANS_RESPONSE5 = f"Xin lỗi, tôi không có thông tin cần thiết để trả lời câu hỏi hoặc yêu cầu '[QUESTION]'."   \
+                   f" Có thể bạn muốn thử đặt câu hỏi hoặc yêu cầu khác hoặc cung cấp thêm context để tôi hiểu rõ hơn."
+
+NO_ANS_RESPONSE6 = f"Xin lỗi, nhưng tôi không thể cung cấp câu trả lời cho câu hỏi hoặc yêu cầu này '[QUESTION]'."  \
+                   f" Bạn có thể thử đặt câu hỏi hoặc yêu cầu khác cho tôi không?"
+
+NO_ANS_RESPONSE7 = f"Tôi rất tiếc, nhưng tôi không có thông tin cụ thể nào liên quan đến câu hỏi hoặc yêu cầu '[QUESTION]'."    \
+                   f" Có câu hỏi hoặc yêu cầu khác nào tôi có thể giúp đỡ?"
+
+NO_ANS_RESPONSE8 = f"Câu trả lời cho câu hỏi hoặc yêu cầu này '[QUESTION]' không có trong database của tôi."    \
                    f" Hãy thử hỏi điều gì đó khác nhé!"
-NO_ANS_RESPONSE9 = f"Tôi không thể tìm thấy thông tin liên quan đến câu hỏi '[QUESTION]' trong nguồn dữ liệu hiện có." \
-                   f" Có thể bạn muốn thử hỏi điều gì đó khác?"
-NO_ANS_RESPONSE10 = f"Rất tiếc, tôi không có đủ thông tin để trả lời câu hỏi của bạn." \
-                    f" Bạn có thể đưa thêm chi tiết hoặc hỏi một câu hỏi khác."
-NO_ANS_RESPONSE11 = f"Tôi không thể cung cấp câu trả lời chính xác cho câu hỏi này '[QUESTION]'." \
-                    f" Bạn có thể cung cấp thêm thông tin để tôi hiểu rõ hơn không?"
-NO_ANS_RESPONSE12 = f"Xin lỗi, tôi không có thông tin cần thiết để đáp ứng yêu cầu của bạn." \
-                    f" Bạn có thể thử hỏi một câu hỏi khác hay không?"
-NO_ANS_RESPONSE13 = f"Tôi không thể tìm thấy câu trả lời trong database của mình." \
-                    f" Hãy thử đưa ra câu hỏi khác để tôi có thể giúp bạn."
-NO_ANS_RESPONSE14 = f"Tôi không thể cung cấp câu trả lời đầy đủ cho câu hỏi của bạn." \
-                    f" Bạn có thể cung cấp thêm thông tin hoặc hỏi câu hỏi khác."
-NO_ANS_RESPONSE15 = f"Xin lỗi, nhưng tôi không thể tìm thấy câu trả lời." \
-                    f" Bạn có thể đưa thêm ngữ cảnh hoặc hỏi một câu hỏi khác được không?"
-NO_ANS_RESPONSE16 = f"Rất tiếc, tôi không thể tìm thấy câu trả lời mà bạn đang tìm kiếm." \
-                    f" Có câu hỏi khác nào tôi có thể giúp đỡ?"
-NO_ANS_RESPONSE17 = f"Tôi không có thông tin cụ thể về câu hỏi này '[QUESTION]'." \
-                    f" Bạn có thể đưa thêm thông tin chi tiết hoặc hỏi một câu hỏi khác."
-NO_ANS_RESPONSE18 = f"Tôi không thể trả lời câu hỏi của bạn dựa trên dữ liệu hiện có." \
-                    f" Hãy thử đưa thêm ngữ cảnh hoặc hỏi một câu hỏi khác."
-NO_ANS_RESPONSE19 = f"Xin lỗi, tôi không có đủ thông tin để cung cấp câu trả lời cho câu hỏi này '[QUESTION]'." \
-                    f" Bạn có thể hỏi một câu hỏi khác không?"
-NO_ANS_RESPONSE20 = f"Tôi không thể tìm thấy câu trả lời cho câu hỏi của bạn." \
-                    f" Bạn có thể cung cấp thêm thông tin hoặc hỏi một câu hỏi khác."
+
+NO_ANS_RESPONSE9 = f"Tôi không thể tìm thấy thông tin liên quan đến câu hỏi hoặc yêu cầu '[QUESTION]' trong nguồn dữ liệu hiện có." \
+                   f" Có thể bạn muốn thử hỏi câu hỏi hoặc yêu cầu khác?"
+
+NO_ANS_RESPONSE10 = f"Rất tiếc, tôi không có đủ thông tin để trả lời câu hỏi hoặc yêu cầu của bạn." \
+f" Bạn có thể đưa thêm chi tiết hoặc hỏi một câu hỏi hoặc yêu cầu khác."
+
+NO_ANS_RESPONSE11 = f"Tôi không thể cung cấp câu trả lời chính xác cho câu hỏi hoặc yêu cầu này '[QUESTION]'."  \
+f" Bạn có thể cung cấp thêm thông tin để tôi hiểu rõ hơn không?"
+
+NO_ANS_RESPONSE12 = f"Xin lỗi, tôi không có thông tin cần thiết để đáp ứng yêu cầu của bạn."    \
+f" Bạn có thể thử hỏi câu hỏi hoặc yêu cầu khác hay không?"
+
+NO_ANS_RESPONSE13 = f"Tôi không thể tìm thấy câu trả lời trong database của mình."  \
+f" Hãy thử đưa ra câu hỏi hoặc yêu cầu khác để tôi có thể giúp bạn."
+
+NO_ANS_RESPONSE14 = f"Tôi không thể cung cấp câu trả lời đầy đủ cho câu hỏi hoặc yêu cầu của bạn."  \
+f" Bạn có thể cung cấp thêm thông tin hoặc hỏi câu hỏi hoặc yêu cầu khác."
+
+NO_ANS_RESPONSE15 = f"Xin lỗi, nhưng tôi không thể tìm thấy câu trả lời."   \
+f" Bạn có thể đưa thêm ngữ cảnh hoặc hỏi một câu hỏi hoặc yêu cầu khác được không?"
+
+NO_ANS_RESPONSE16 = f"Rất tiếc, tôi không thể tìm thấy câu trả lời mà bạn đang tìm kiếm."   \
+f" Có câu hỏi hoặc yêu cầu khác nào tôi có thể giúp đỡ?"
+
+NO_ANS_RESPONSE17 = f"Tôi không có thông tin cụ thể về câu hỏi hoặc yêu cầu này '[QUESTION]'."  \
+f" Bạn có thể đưa thêm thông tin chi tiết hoặc hỏi một câu hỏi hoặc yêu cầu khác."
+
+NO_ANS_RESPONSE18 = f"Tôi không thể trả lời câu hỏi hoặc yêu cầu của bạn dựa trên dữ liệu hiện có." \
+f" Hãy thử đưa thêm ngữ cảnh hoặc hỏi một câu hỏi hoặc yêu cầu khác."
+
+NO_ANS_RESPONSE19 = f"Xin lỗi, tôi không có đủ thông tin để cung cấp câu trả lời cho câu hỏi hoặc yêu cầu này '[QUESTION]'."    \
+f" Bạn có thể hỏi một câu hỏi hoặc yêu cầu khác không?"
+
+NO_ANS_RESPONSE20 = f"Tôi không thể tìm thấy câu trả lời cho câu hỏi hoặc yêu cầu của bạn." \
+f" Bạn có thể cung cấp thêm thông tin hoặc hỏi một câu hỏi hoặc yêu cầu khác."
 
 
-TRIVIAL_ANS1 = f"Tôi không thể tìm được tài liệu liên quan cho câu hỏi [QUESTION] tuy nhiên," \
-               f" theo tôi được biết [ANSWER]"
-TRIVIAL_ANS2 = f"Kiến thức trong database không chứa tài liệu liên quan," \
-               f" nhưng tôi có thể trả lời câu hỏi này [ANSWER]"
-TRIVIAL_ANS3 = f"Theo tôi được biết [ANSWER]"
-TRIVIAL_ANS4 = f"[ANSWER]"
-TRIVIAL_ANS5 = f"Trong database của tôi không có tài liệu liên quan," \
-               f"nhưng cảu hỏi này tôi có thể trả lời như sau: [QUESTION]"
-TRIVIAL_ANS6 = f"Tôi không tìm thấy thông tin cụ thể về câu hỏi [QUESTION], tuy nhiên," \
-               f"theo kiến thức của tôi, [ANSWER]"
-TRIVIAL_ANS7 = f"Có vẻ như tôi không thể truy xuất được tài liệu về [QUESTION]," \
-               f" nhưng đáp án có thể là [ANSWER]"
-TRIVIAL_ANS8 = f"Xin lỗi, tôi không thể tìm thấy thông tin về [QUESTION]. Tuy nhiên," \
-               f"đáp án có thể là [ANSWER]"
-TRIVIAL_ANS9 = f"Theo kiến thức hiện có của tôi, câu trả lời cho [QUESTION] có thể là [ANSWER]"
-TRIVIAL_ANS10 = f"Không có thông tin cụ thể về câu hỏi [QUESTION], nhưng tôi cho rằng [ANSWER]"
-TRIVIAL_ANS11 = f"Tôi không tìm thấy tài liệu nào liên quan đến [QUESTION]," \
-                f"nhưng theo kiến thức của tôi, câu trả lời có thể là [ANSWER]"
-TRIVIAL_ANS12 = f"Rất tiếc, không có thông tin cụ thể về câu hỏi [QUESTION]. " \
-                f"Tuy nhiên, theo tôi được biết, [ANSWER]"
-TRIVIAL_ANS13 = f"Không tìm thấy tài liệu liên quan đến [QUESTION]. Tuy vậy," \
-                f"tôi nghĩ câu trả lời có thể là [ANSWER]"
-TRIVIAL_ANS14 = f"Xin lỗi, tôi không thể tìm thấy thông tin về [QUESTION]," \
-                f" nhưng dựa vào kiến thức hiện có, câu trả lời là [ANSWER]"
-TRIVIAL_ANS15 = f"Trong database của tôi không có tài liệu liên quan đến [QUESTION]. " \
-                f"Nhưng theo tôi được biết, [ANSWER]"
-TRIVIAL_ANS16 = f"Xin lỗi, tôi không thể tìm thấy thông tin cụ thể về câu hỏi [QUESTION]. " \
-                f"Tuy nhiên, có thể [ANSWER]"
-TRIVIAL_ANS17 = f"Không có thông tin cụ thể về [QUESTION] trong database của tôi. " \
-                f"Tuy vậy, tôi nghĩ câu trả lời là [ANSWER]"
-TRIVIAL_ANS18 = f"Tôi đã kiểm tra nhưng không có tài liệu liên quan đến [QUESTION]. " \
-                f"Theo tôi được biết, [ANSWER]"
-TRIVIAL_ANS19 = f"Tôi không tìm thấy thông tin về câu hỏi [QUESTION]. " \
-                f"Nhưng dựa vào kiến thức hiện có, câu trả lời có thể là [ANSWER]"
-TRIVIAL_ANS20 = f"Rất tiếc, không có tài liệu liên quan đến [QUESTION]. " \
-                f"Nhưng tôi cho rằng [ANSWER]"
+TRIVIAL_ANS1 = f"Tôi không thể tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], tuy nhiên, "   \
+f"theo tôi được biết [ANSWER]."
+
+TRIVIAL_ANS2 = f"Kiến thức trong database không chứa thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], " \
+f"nhưng tôi có thể trả lời câu hỏi này [ANSWER]."
+
+TRIVIAL_ANS3 = f"Tôi không thể tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. "  \
+f"Theo tôi được biết [ANSWER]."
+
+TRIVIAL_ANS4 = f"Tôi không tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. [ANSWER]."
+
+TRIVIAL_ANS5 = f"Trong database của tôi không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], " \
+f"nhưng câu trả lời của tôi là [ANSWER]."
+
+TRIVIAL_ANS6 = f"Tôi không tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], tuy nhiên, "   \
+f"theo kiến thức của tôi, [ANSWER]."
+
+TRIVIAL_ANS7 = f"Có vẻ như tôi không thể truy xuất được thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], "  \
+f"nhưng đáp án có thể là [ANSWER]."
+
+TRIVIAL_ANS8 = f"Xin lỗi, tôi không thể tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. " \
+f"Tuy nhiên, đáp án có thể là [ANSWER]."
+
+TRIVIAL_ANS9 = f"Tôi không thể tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], "  \
+f"nhưng theo kiến thức hiện có của tôi, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS10 = f"Không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], "   \
+f"nhưng tôi cho rằng câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS11 = f"Tôi không tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION], " \
+f"nhưng theo kiến thức của tôi, câu trả lời có thể là [ANSWER]."
+
+TRIVIAL_ANS12 = f"Rất tiếc, không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. " \
+f"Tuy nhiên, theo tôi được biết, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS13 = f"Không tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. " \
+f"Tuy vậy, tôi nghĩ câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS14 = f"Xin lỗi, tôi không thể tìm thấy thông tin về câu hỏi hoặc yêu cầu [QUESTION], "   \
+f"nhưng dựa vào kiến thức hiện có, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS15 = f"Trong database của tôi không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. "    \
+f"Nhưng theo tôi được biết, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS16 = f"Xin lỗi, tôi không thể tìm thấy thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. "    \
+f"Tuy nhiên, tôi nghĩ câu trả lời có thể là [ANSWER]."
+
+TRIVIAL_ANS17 = f"Không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION] trong database của tôi. "    \
+f"Tuy vậy, tôi nghĩ câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS18 = f"Tôi đã kiểm tra nhưng không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. " \
+f"Theo tôi được biết, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS19 = f"Tôi không tìm thấy thông tin về câu hỏi hoặc yêu cầu [QUESTION]. "    \
+f"Nhưng dựa vào kiến thức hiện có, câu trả lời là [ANSWER]."
+
+TRIVIAL_ANS20 = f"Rất tiếc, không có thông tin cụ thể về câu hỏi hoặc yêu cầu [QUESTION]. " \
+f"Tuy nhiên, tôi cho rằng câu trả lời là [ANSWER]."
+
 
 RESPONSE1 = f"Dựa vào thông tin hiện có, tôi nghĩ câu trả lời có thể là: [ANSWER]"
 
@@ -132,93 +173,97 @@ RESPONSE19 = f"Xét về khả năng, tôi cho rằng câu trả lời là: [ANS
 RESPONSE20 = f"Dựa vào thông tin hiện tại, tôi suy đoán câu trả lời là: [ANSWER]"
 
 
-PROMPT_INPUT1 = f"Dựa vào context sau: [CONTEXT] bạn hãy trả lời câu hỏi sau [QUESTION], nếu không có câu trả lời " \
-                f"bạn có thể trả lời dựa trên kiến thức của bạn hoặc trả lời không tìm thấy " \
-                f"ví dụ như: 'không tìm thấy cảu trả lời cho câu hỏi của bạn' [EOS]"
+PROMPT_INPUT1 = f"Dựa vào context sau: [CONTEXT] bạn hãy trả lời hoặc thực hiện yêu cầu sau: [QUESTION]," \
+                f" nếu không có câu trả lời bạn có thể trả lời dựa trên kiến thức của bạn" \
+                f" hoặc trả lời không tìm thấy ví dụ như: 'không tìm thấy cảu trả lời cho câu hỏi của bạn' [EOS]"
 
-PROMPT_INPUT2 = f"Dựa vào kiến thức lấy được từ database: [CONTEXT], hãy trích xuất thông tin ra và trả lời câu hỏi " \
-                f"sau [QUESTION], nếu như không tìm thấy câu trả lời, bạn có thể trả lời 'không biết,...'" \
-                f"hoặc cố gắng trả lời với kiến thức của bạn [EOS]"
+PROMPT_INPUT2 = f"Dựa trên kiến thức lấy được từ database: [CONTEXT], hãy trích xuất thông tin ra và trả lời câu hỏi " \
+                f"hoặc thực hiện yêu cầu sau [QUESTION], nếu như không tìm thấy câu trả lời, bạn có thể trả lời 'không biết,..." \
+                f" hoặc cố gắng trả lời với kiến thức của bạn [EOS]"
 
-PROMPT_INPUT3 = f"Người dùng hỏi câu hỏi sau: [QUESTION], dựa trên kiến thức lấy được từ database: [CONTEXT], bạn hãy " \
-                f"trả lời câu hỏi đó. Nếu như không trả lời được, bạn có thể yêu cầu thêm dữ liệu hoặc cố" \
-                f"trả lời với kiến thức của bạn [EOS]"
+PROMPT_INPUT3 = f"Người dùng hỏi câu hỏi hoặc đưa ra yêu cầu sau: [QUESTION]," \
+                f" dựa trên kiến thức lấy được từ database: [CONTEXT], bạn hãy trả lời câu hỏi đó hoặc thực hiện yêu cầu." \
+                f" Nếu như không trả lời được, bạn có thể yêu cầu thêm dữ liệu hoặc cố trả lời với kiến thức của bạn [EOS]"
 
-PROMPT_INPUT4 = f"Bây giờ, hãy tập trung vào câu hỏi sau: [QUESTION]. Context cho câu hỏi này là [CONTEXT]." \
-                f" Nếu không tìm thấy câu trả lời, bạn có thể nói 'Câu trả lời không tìm thấy trong dữ liệu hiện " \
+PROMPT_INPUT4 = f"Bây giờ, hãy tập trung vào câu hỏi hoặc yêu cầu sau: [QUESTION]. Context cho câu hỏi này là [CONTEXT]. " \
+                f"Nếu không tìm thấy câu trả lời, bạn có thể nói 'Câu trả lời không tìm thấy trong dữ liệu hiện " \
                 f"có của tôi, bạn có thể hỏi tôi một câu hỏi khác hoặc cung cấp thêm context cho tôi được không?' " \
-                f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. Hoặc cố trả lời" \
+                f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. Hoặc cố trả lời " \
                 f"với kiến thức của bạn nếu như câu hỏi đó dễ [EOS]"
 
-PROMPT_INPUT5 = f"Hãy xem xét câu hỏi này: [QUESTION]. Bạn có thể tìm câu trả lời trong dữ liệu này: [CONTEXT]." \
-                f" Nếu không có câu trả lời trong dữ liệu, bạn có thể nói 'Xin lỗi, tôi không có thông tin cần thiết để trả lời " \
-                f"câu hỏi của bạn. Có thể bạn muốn thử đặt câu hỏi khác hoặc cung cấp thêm context để tôi hiểu " \
+PROMPT_INPUT5 = f"Hãy xem xét câu hỏi hoặc yêu cầu này: [QUESTION]. Bạn có thể tìm câu trả lời trong dữ liệu này: [CONTEXT]. " \
+                f"Nếu không có câu trả lời trong dữ liệu, bạn có thể nói 'Xin lỗi, tôi không có thông tin cần thiết để trả lời " \
+                f"câu hỏi hoặc thực hiện yêu cầu của bạn. Có thể bạn muốn thử đặt câu hỏi khác hoặc cung cấp thêm context để tôi hiểu " \
                 f"rõ hơn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT6 = f"Xin hãy giúp trả lời câu hỏi sau: [QUESTION]. Dựa vào dữ kiện sau đây: [CONTEXT], bạn có thể "    \
-                f"trả lời câu hỏi này. Nếu không có câu trả lời, bạn có thể nói 'Xin lỗi, nhưng tôi không thể "     \
-                f"cung cấp câu trả lời cho câu hỏi này.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc "    \
-                f"hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT6 = f"Xin hãy giúp trả lời câu hỏi hoặc thực hiện yêu cầu sau: [QUESTION]." \
+                f" Dựa vào dữ kiện sau đây: [CONTEXT], bạn có thể trả lời câu hỏi hoặc thực hiện yêu cầu này." \
+                f" Nếu không có câu trả lời, bạn có thể nói 'Xin lỗi, nhưng tôi không thể cung cấp câu trả lời" \
+                f" cho câu hỏi hoặc thực hiện yêu cầu này.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi " \
+                f"một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT7 = f"Giúp tôi trả lời câu hỏi sau: [QUESTION], dựa vào dữ liệu lấy từ: [CONTEXT]. Nếu không biết, bạn "    \
-                f"có thể nói 'Tôi rất tiếc, nhưng tôi không có thông tin cụ thể nào liên quan đến câu hỏi của bạn.' "  \
-                f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT7 = f"Giúp tôi trả lời câu hỏi hoặc thực hiện yêu cầu sau: [QUESTION], dựa vào dữ liệu lấy từ: [CONTEXT]. " \
+                f"Nếu không biết, bạn có thể nói 'Tôi rất tiếc, nhưng tôi không có thông tin cụ thể nào liên quan" \
+                f" đến câu hỏi hoặc yêu cầu của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc" \
+                f" hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT8 = f"Trả lời câu hỏi sau: [QUESTION], dựa vào thông tin sau: [CONTEXT]. Nếu không có câu trả lời trong" \
-                f"dữ liệu bạn có thể cố trả lời với kiến thức của bạn, hoặc "    \
+PROMPT_INPUT8 = f"Dựa vào thông tin sau: [CONTEXT], bạn hãy trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "   \
+                f"Nếu không có câu trả lời trong dữ liệu, bạn có thể cố gắng trả lời với kiến thức của bạn, hoặc "  \
                 f"bạn có thể nói 'Câu trả lời cho câu hỏi này không có trong database của tôi.' và yêu cầu người "  \
                 f"dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT9 = f"Dựa vào kiến thức từ database: [CONTEXT], hãy trả lời câu hỏi sau: [QUESTION]. "  \
-                f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể tìm thấy thông tin liên quan đến câu hỏi " \
+PROMPT_INPUT9 = f"Dựa vào thông tin từ database: [CONTEXT], hãy trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "   \
+                f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể tìm thấy thông tin liên quan đến câu hỏi "  \
                 f"của bạn trong nguồn dữ liệu hiện có.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc " \
+                f"hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT10 = f"Đối với câu hỏi sau: [QUESTION], bạn có thể tìm câu trả lời trong dữ liệu này: [CONTEXT]. "  \
-                f"Nếu không biết, bạn có thể nói 'Rất tiếc, tôi không có đủ thông tin để trả lời câu hỏi của bạn.' "   \
-                f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT10 = f"Đối với câu hỏi sau hoặc yêu cầu sau: [QUESTION], bạn có thể tìm câu trả lời trong dữ liệu này: [CONTEXT]. " \
+                 f"Nếu không biết, bạn có thể nói 'Rất tiếc, tôi không có đủ thông tin để trả lời câu hỏi hoặc " \
+                 f"thực hiện yêu cầu của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT11 = f"Bạn hãy trả lời câu hỏi sau: [QUESTION], dựa vào kiến thức lấy được từ database: [CONTEXT]. "    \
-                f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể cung cấp câu trả lời chính xác cho câu "    \
-                f"hỏi này.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT11 = f"Bạn hãy trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION], dựa vào kiến thức lấy được từ database: [CONTEXT]. " \
+                 f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể cung cấp câu trả lời chính xác cho câu "    \
+                 f"hỏi hoặc yêu cầu này.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT12 = f"Hãy giúp trả lời câu hỏi sau: [QUESTION], dựa vào thông tin sau: [CONTEXT]. "    \
-                f"Nếu không có câu trả lời, bạn có thể nói 'Xin lỗi, tôi không có thông tin cần thiết để đáp ứng "  \
-                f"yêu cầu của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT12 = f"Hãy giúp trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION], dựa vào thông tin sau: [CONTEXT]. " \
+                 f"Nếu không có câu trả lời, bạn có thể nói 'Xin lỗi, tôi không có thông tin cần thiết để đáp ứng "  \
+                 f"yêu cầu của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT13 = f"Trả lời câu hỏi sau: [QUESTION], dựa vào kiến thức từ database: [CONTEXT]. " \
-                f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể tìm thấy câu trả lời trong database của mình.' "    \
-                f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
+PROMPT_INPUT13 = f"Trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION], dựa vào kiến thức từ database: [CONTEXT]. "  \
+                 f"Nếu không trả lời được, bạn có thể nói 'Tôi không thể tìm thấy câu trả lời trong database của mình.' "    \
+                 f"và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi một câu hỏi khác. [EOS]"
 
-PROMPT_INPUT14 = f"Dựa vào thông tin sau: [CONTEXT], bạn có thể cung cấp câu trả lời đầy đủ cho câu hỏi sau: [QUESTION] "   \
-                f"không? Nếu không có câu trả lời, bạn có thể nói 'Tôi không thể cung cấp câu trả lời đầy đủ cho câu "  \
-                f"hỏi của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi câu hỏi khác. [EOS]"
+PROMPT_INPUT14 = f"Dựa vào thông tin sau: [CONTEXT], bạn có thể cung cấp câu trả lời đầy đủ cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION] "    \
+                 f"không? Nếu không có câu trả lời, bạn có thể nói 'Tôi không thể cung cấp câu trả lời đầy đủ cho câu "  \
+                 f"hỏi hoặc yêu cầu của bạn.' và yêu cầu người dùng cung cấp thông tin bổ sung hoặc hỏi câu hỏi khác. [EOS]"
 
 PROMPT_INPUT15 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"Hãy cố gắng tìm kiếm câu trả lời cho câu hỏi sau: [QUESTION]. "   \
-                f"Nếu bạn cần thêm thông tin, đừng ngần ngại yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
+                 f"Hãy cố gắng tìm kiếm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
+                 f"Nếu bạn cần thêm thông tin, đừng ngần ngại yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
 
 PROMPT_INPUT16 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"Tìm kiếm cẩn thận để giúp tôi trả lời câu hỏi sau: [QUESTION]. "  \
-                f"Nếu không tìm thấy, đừng lo lắng, cứ hỏi thêm hoặc đưa ra câu hỏi khác. [EOS]"
+                 f"Tìm kiếm cẩn thận để giúp tôi trả lời câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "   \
+                 f"Nếu không tìm thấy, đừng lo lắng, cứ hỏi thêm hoặc đưa ra câu hỏi khác. [EOS]"
 
 PROMPT_INPUT17 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"bạn hãy cố gắng giúp tôi tìm câu trả lời cho câu hỏi sau: [QUESTION]. "    \
-                f"Nếu thông tin không đủ, hãy cung cấp thêm chi tiết hoặc hỏi một câu hỏi khác. [EOS]"
+                 f"bạn hãy cố gắng giúp tôi tìm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
+                 f"Nếu thông tin không đủ, hãy cung cấp thêm chi tiết hoặc hỏi một câu hỏi khác. [EOS]"
 
 PROMPT_INPUT18 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"Tôi sẽ cùng bạn tìm kiếm câu trả lời cho câu hỏi này: [QUESTION]. "   \
-                f"Nếu cần thêm dữ liệu, hãy yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
+                 f"Tôi sẽ cùng bạn tìm kiếm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
+                 f"Nếu cần thông tin bổ sung, hãy yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
 
 PROMPT_INPUT19 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"Hãy giúp tôi tìm câu trả lời cho câu hỏi sau: [QUESTION]. "   \
-                f"Nếu không tìm thấy, bạn có thể bảo user hỏi một câu hỏi khác [EOS]"
+                 f"Hãy giúp tôi tìm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
+                 f"Nếu không tìm thấy, bạn có thể bảo người dùng hỏi một câu hỏi khác [EOS]"
 
 PROMPT_INPUT20 = f"Xem xét thông tin sau: [CONTEXT]. "  \
-                f"Hãy cùng tôi tìm câu trả lời cho câu hỏi sau: [QUESTION]. "   \
-                f"Nếu cần thông tin bổ sung, hãy yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
+                 f"Hãy cùng tôi tìm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
+                 f"Nếu cần thông tin bổ sung, hãy yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
 
 NO_DOCS_MESSAGE1 = f" Không documents nào có điểm đủ cao để query cho câu hỏi. "
 NO_DOCS_MESSAGE2 = f" Database không chứa documents nào phù hợp cho câu hỏi. "
+
 
 @dataclass
 class TEMPLATE(ABC):
@@ -331,7 +376,6 @@ if __name__ == "__main__":
     #                                             answer=python_question_contexts[0])
     # print(prompt)
 
-    set_seed(575338)
     prompt = QA_TEMPLATE().get_random_prompt(question=python_questions[0],
                                              context=python_question_contexts[0])
 

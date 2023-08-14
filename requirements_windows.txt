@@ -1,0 +1,13 @@
+transformers
+datasets
+pytorch
+peft
+tokenizers
+py_vncorenlp
+--prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
+bitsandbytes
+sentencepiece
+datasets
+langchain
+accelerate
+googletrans==3.1.0a0

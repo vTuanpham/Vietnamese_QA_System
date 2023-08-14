@@ -1,6 +1,0 @@
-transformers
-datasets
-pytorch
-peft
-tokenizers
-py_vncorenlp
