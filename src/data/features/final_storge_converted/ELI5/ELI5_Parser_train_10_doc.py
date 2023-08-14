@@ -19,8 +19,8 @@ class ELI5Parser(DataParser):
                          parser_type=PARSER_TYPE,
                          do_ctx_augmentation=False,
                          do_translate=True,
-                         max_example_per_thread=2000,
-                         large_chunks_threshold=20000)
+                         max_example_per_thread=50,
+                         large_chunks_threshold=300)
         self.max_ctxs = max_ctxs
 
     def read(self):
@@ -51,7 +51,7 @@ class ELI5Parser(DataParser):
             data_dict['docs_lengths'] = None
             data_converted.append(data_dict)
 
-        self.converted_data = data_converted[:10]
+        self.converted_data = data_converted[:450]
 
         pass
 

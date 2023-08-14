@@ -169,6 +169,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
                             desc: str = None,
                             translator: Translator = None,
                             large_chunk: List[str] = None) -> Union[None, List[str]]:
+        """This function support translation in multithread for large dataset"""
+
         assert self.converted_data is not None or en_data is not None or large_chunk is not None, \
             "Please implement the convert function for DataParser " \
             "and assign converted_data to self.converted_data"
@@ -181,18 +183,20 @@ class DataParser(metaclass=ForceBaseCallMeta):
             converted_data = en_data
 
         translated_data = []
+
+        # Split large data into large chunks, recursive feed to the same function
         if len(converted_data) > self.large_chunks_threshold and large_chunk is None:
             num_large_chunks = len(converted_data) / self.large_chunks_threshold
             large_chunks = [converted_data[x:x + self.large_chunks_threshold] for x in
                             range(0, len(converted_data), self.large_chunks_threshold)]
-            print(
-                f" Data is way too large, spliting data into {num_large_chunks} large chunk for sequential translation")
+            print(f" Data is way too large, spliting data into {num_large_chunks} large chunk for sequential translation")
 
             for idx, large_chunk in enumerate(tqdm(large_chunks, desc=f"Translating large chunk ")):
                 print(f" Processing large chunk No: {idx}")
                 self.translate_converted(large_chunk=large_chunk)
             return None
 
+        # Split large chunk into large example, recursive feed to the same function via multithread
         if len(converted_data) > self.max_example_per_thread and en_data is None:
             num_threads = len(converted_data) / self.max_example_per_thread
             chunks = [converted_data[x:x + self.max_example_per_thread] for x in
@@ -213,18 +217,21 @@ class DataParser(metaclass=ForceBaseCallMeta):
                     if future_dict['future'].exception():
                         lock = threading.Lock()
                         with lock:
-                            print(
-                                f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
-                        backup_future_dict = {
-                            "future": executor.submit(self.translate_converted, chunks[future_dict['idx']],
-                                                      f"Backup chunk {future_dict['idx']}", Translator()),
-                            "idx": future_dict['idx']}
+                            print(f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
+                        backup_future_dict = {"future": executor.submit(self.translate_converted, chunks[future_dict['idx']],
+                                              f"Backup chunk {future_dict['idx']}", Translator()),
+                                              "idx": future_dict['idx']}
                         futures[future_dict['idx']] = backup_future_dict
                         continue
                     translated_data += future_dict['future'].result()
+
             if large_chunk:
-                if not self.converted_data_translated: self.converted_data_translated = []
-                self.converted_data_translated += translated_data
+                if not self.converted_data_translated:
+                    self.converted_data_translated = translated_data
+                else:
+                    self.converted_data_translated += translated_data
+                return None
+
             self.converted_data_translated = translated_data
             return None
 
@@ -237,9 +244,10 @@ class DataParser(metaclass=ForceBaseCallMeta):
             self.converted_data_translated = translated_data
         except ConnectTimeout:
             if not desc:
-                print(f" Connection timeout, please provide better connection")
+                raise f" Connection timeout, please provide better connection"
             else:
-                print(f" Connection timeout raise from thread {desc}")
+                print(f" Connection timeout from thread {desc}")
+                raise f" Connection timeout raise from thread {desc}"
 
     @abstractmethod
     @force_super_call
@@ -277,8 +285,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
             with open(output_translated_path, 'w', encoding='utf-8') as jfile:
                 print(f"\n Saving {self.parser_type} translated to {output_translated_path}... ")
                 translated_data = []
-                for idx, data in enumerate(
-                        tqdm(self.converted_data_translated, desc="Writing translated data to file")):
+                for idx, data in enumerate(tqdm(self.converted_data_translated, desc="Writing translated data to file")):
                     translated_data.append(data)
                 json.dump(translated_data, jfile, ensure_ascii=False, indent=4)
                 print(f"\n Total line printed: {idx + 1}")
