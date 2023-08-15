@@ -1,2 +1,2 @@
-# DPRMarxism_QA
-Dense passage retrieval for vietnamese question answering on marxism ideology.
+## Dense passage retrieval for vietnamese general question answering 
+Repo in progress
