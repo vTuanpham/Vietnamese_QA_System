@@ -2,10 +2,12 @@
 
 
 ## Context augmentation
-* Contain context injectors for random context augmentation. This is done to make the model more robust and 
-* pay attention to random position in the docs. Pre-trained model often train on news, media where important
-* information lie in the start or the end of the text, this will introduce bias which is not what we want.
-* This problem was researched in the paper "Lost in the Middle: How Language Models Use Long Contexts" https://arxiv.org/pdf/2307.03172.pdf
+* Contain context injectors for random context augmentation.
+* This is done to make the model more robust and pay attention to random position in the docs.
+* Pre-trained model often train on news, media where important information lie at the start or the end of the text
+  information lie at the start or the end of the text, this will introduce bias which is not what we want.
+* This problem was researched in the paper [Lost in the Middle: How Language Models Use Long Contexts](https://arxiv.org/pdf/2307.03172.pdf)
+* Context augmentation is fetch from random page of vietnamese wikipedia
 
 ## Data translation
 * Contain translator from vinai or google api
