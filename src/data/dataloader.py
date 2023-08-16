@@ -166,15 +166,15 @@ if __name__ == "__main__":
         "model_name": "google/mt5-base",
         "text_column": "prompt",
         "target_column": "target",
-        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\DPRMarxism_QA\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\DPRMarxism_QA\src\data\features\final_storge_converted\ELI5\ELI5_Parser_translated_val.json"],
+        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json",
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_translated_val.json"],
         "batch_size": 8,
         "seed": 42,
         "max_train_samples": 450
     }
 
     idx = random.randint(0, 400)
-    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\DPRMarxism_QA\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json"],
+    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json"],
                            num_examples=400)
     print(qa_dataset[idx])
     print(qa_dataset[idx].get_dict)

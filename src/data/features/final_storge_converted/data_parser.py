@@ -11,7 +11,6 @@ from typing import List, Dict, Union
 from abc import ABCMeta, abstractmethod
 from tqdm.auto import tqdm
 
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from googletrans import Translator
@@ -201,7 +200,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
             num_threads = len(converted_data) / self.max_example_per_thread
             chunks = [converted_data[x:x + self.max_example_per_thread] for x in
                       range(0, len(converted_data), self.max_example_per_thread)]
-            print(f" Data too large, splitting data into {num_threads} chunk, each chunk is {len(chunks[0])}")
+            print(f" Data too large, splitting data into {num_threads} chunk, each chunk is {len(chunks[0])}"
+                  f" Processing with multithread...")
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
                 for idx, chunk in enumerate(chunks):
@@ -215,9 +215,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                 for future_dict in tqdm(futures, desc=desc):
                     # If exception occurs in one of the thread, restart the thread with its specific chunk
                     if future_dict['future'].exception():
-                        lock = threading.Lock()
-                        with lock:
-                            print(f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
+                        print(f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
                         backup_future_dict = {"future": executor.submit(self.translate_converted, chunks[future_dict['idx']],
                                               f"Backup chunk {future_dict['idx']}", Translator()),
                                               "idx": future_dict['idx']}
