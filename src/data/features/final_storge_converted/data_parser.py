@@ -6,6 +6,11 @@ import sys
 import string
 
 sys.path.insert(0, r'./')
+try:
+    from google.colab import files
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
 from httpcore._exceptions import ConnectTimeout
 from typing import List, Dict, Union
 from abc import ABCMeta, abstractmethod
@@ -276,6 +281,10 @@ class DataParser(metaclass=ForceBaseCallMeta):
             json.dump(validated_data, jfile, ensure_ascii=False, indent=4)
             print(f"\n Total line printed: {idx + 1}")
 
+        if IN_COLAB:
+            print(f"\n Downloading converted data to local machine...")
+            files.dowload(output_path)
+
         if self.do_translate:
             self.translate_converted()
             assert self.converted_data_translated is not None, "Converted data haven't been translated yet!"
@@ -287,4 +296,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
                     translated_data.append(data)
                 json.dump(translated_data, jfile, ensure_ascii=False, indent=4)
                 print(f"\n Total line printed: {idx + 1}")
+
+            if IN_COLAB:
+                print(f"\n Downloading converted translated data to local machine...")
+                files.dowload(output_translated_path)
 
