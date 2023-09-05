@@ -12,13 +12,15 @@ from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 from transformers import AutoTokenizer
 
-from configs import AdvanceQAExample
+from configs import AdvanceQAExample, AdvanceInstructSample
 
 
 class AdvanceQa(Dataset):
-    def __init__(self, json_file_paths: List[str], num_examples):
+    def __init__(self, json_file_paths: List[str], num_examples,
+                 config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample):
         num_examples_each = math.floor(num_examples/len(json_file_paths))
         self.full_json_data = []
+        self.config_type = config_type
         for json_path in json_file_paths:
             with open(json_path, encoding='utf-8') as jfile:
                 json_data = json.load(jfile)
@@ -29,7 +31,7 @@ class AdvanceQa(Dataset):
 
     def __getitem__(self, idx):
         try:
-            advance_qapair = AdvanceQAExample(**self.full_json_data[idx])
+            advance_qapair = self.config_type(**self.full_json_data[idx])
         except KeyError:
             raise f"Missing keys to fill for {self.full_json_data[idx]} in item {idx}"
 
@@ -49,7 +51,8 @@ class QADataloader:
                  use_fast_tokenizer: bool=True,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
-                 max_predict_samples: Optional[int] = None
+                 max_predict_samples: Optional[int] = None,
+                 config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample
                  ) -> None:
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=use_fast_tokenizer)
@@ -57,6 +60,7 @@ class QADataloader:
 
         self.text_column = text_column
         self.target_column = target_column
+        self.config_type = config_type
         self.train_file = train_file
         self.val_file = val_file
         self.test_file = test_file
@@ -102,9 +106,10 @@ class QADataloader:
             A dataset object loaded from all data_files that was divided equally
         """
         if num_example:
-            dataset = AdvanceQa(json_file_paths=data_files, num_examples=num_example)
+            dataset = AdvanceQa(json_file_paths=data_files, num_examples=num_example, config_type=self.config_type)
         else:
-            dataset = AdvanceQa(json_file_paths=data_files)
+            dataset = AdvanceQa(json_file_paths=data_files, config_type=self.config_type)
+
         return dataset
 
     def dynamic_collate(self, batch):
@@ -166,16 +171,18 @@ if __name__ == "__main__":
         "model_name": "google/mt5-base",
         "text_column": "prompt",
         "target_column": "target",
-        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_translated_val.json"],
+        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json"],
         "batch_size": 8,
         "seed": 42,
-        "max_train_samples": 450
+        "max_train_samples": 450,
+        "config_type": AdvanceInstructSample
     }
 
     idx = random.randint(0, 400)
-    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\ELI5\ELI5_Parser_train_10_doc_translated.json"],
-                           num_examples=400)
+    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json"],
+                           num_examples=400,
+                           config_type=AdvanceInstructSample)
     print(qa_dataset[idx])
     print(qa_dataset[idx].get_dict)
     print(qa_dataset[idx].get_dict_str)

@@ -26,7 +26,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, BitsAndBytesConfig
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-from src.data.configs import AdvanceQAExample
+from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 from src.utils import force_super_call, ForceBaseCallMeta, timeit
 
 
@@ -40,6 +40,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                  batch_size: int = 12,
                  translate_via: str = 'ggapi',
                  target_fields: List[str] = ['question_text', 'doc_tokens', 'orig_answer_texts'],
+                 target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
                  max_example_per_thread: int = 100,
                  large_chunks_threshold: int = 20000) -> None:
         self.data_read = None
@@ -59,6 +60,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
 
         if self.do_translate:
             self.target_fields = target_fields
+            self.target_config = target_config
 
             assert max_example_per_thread < large_chunks_threshold, " Large chunks threshold can't be smaller than max_example per thread!"
             self.max_example_per_thread = max_example_per_thread
@@ -87,11 +89,11 @@ class DataParser(metaclass=ForceBaseCallMeta):
                 self.translator = Translator()
 
     @staticmethod
-    def validate(keys: List[str]) -> bool:
-        qa_dict_fields = AdvanceQAExample.get_keys()
-        for key in qa_dict_fields:
-            assert key in keys, f"\n Invalid parser, the key '{key}' is missing from {qa_dict_fields}\n" \
-                                f"you can adjust the fields in the 'src/data/configs/advance_qa_sample.py'" \
+    def validate(keys: List[str], dataclass: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample) -> bool:
+        dict_fields = dataclass.get_keys()
+        for key in dict_fields:
+            assert key in keys, f"\n Invalid parser, the key '{key}' is missing from {dict_fields}\n" \
+                                f"you can adjust the fields in the 'src/data/configs/'" \
                                 f"  or fill in the missing field"
         return True
 
@@ -308,7 +310,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
             print(f"\n Saving {self.parser_type} to {output_path}... ")
             validated_data = []
             for idx, data in enumerate(tqdm(self.converted_data, desc="Writing data to file")):
-                if self.validate(self.converted_data[idx].keys()):
+                if self.validate(self.converted_data[idx].keys(), self.target_config):
                     validated_data.append(data)
             json.dump(validated_data, jfile, ensure_ascii=False, indent=4)
             print(f"\n Total line printed: {idx + 1}")
