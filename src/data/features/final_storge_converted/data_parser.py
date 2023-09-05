@@ -4,6 +4,7 @@ import random
 import re
 import sys
 import string
+import multiprocessing
 
 sys.path.insert(0, r'./')
 try:
@@ -209,24 +210,55 @@ class DataParser(metaclass=ForceBaseCallMeta):
                   f" Processing with multithread...")
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
+                finished_task = 0
+                manager = multiprocessing.Manager()
+
+                def callback_done(future):
+                    nonlocal translated_data
+                    nonlocal finished_task
+                    nonlocal manager
+                    lock = manager.Lock()
+                    if future.result():
+                        with lock:
+                            translated_data += future.result()
+                            finished_task += 1
+                            print("Task finished, adding translated data to result")
+                    elif future.exception():
+                        print(f"Task failed, \nrestarting thread when others finished")
+                        pass
+
                 for idx, chunk in enumerate(chunks):
+                    future_chunk = executor.submit(self.translate_converted, chunk, f"chunk {idx}", Translator())
+                    future_chunk.add_done_callback(callback_done)
                     future_dict = {
-                        "future": executor.submit(self.translate_converted, chunk, f"chunk {idx}", Translator()),
+                        "future": future_chunk,
                         "idx": idx}
                     futures.append(future_dict)
 
-                # Wait for all threads to complete
+                # Progress bar
                 desc = "Translating total converted large chunk data" if large_chunk else "Translating total converted data"
-                for future_dict in tqdm(futures, desc=desc):
-                    # If exception occurs in one of the thread, restart the thread with its specific chunk
-                    if future_dict['future'].exception():
-                        print(f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
-                        backup_future_dict = {"future": executor.submit(self.translate_converted, chunks[future_dict['idx']],
-                                              f"Backup chunk {future_dict['idx']}", Translator()),
-                                              "idx": future_dict['idx']}
-                        futures[future_dict['idx']] = backup_future_dict
-                        continue
-                    translated_data += future_dict['future'].result()
+                progress_bar = tqdm(range(finished_task, len(futures)), desc=desc)
+                # Manually refresh the progress bar to display it
+                progress_bar.refresh()
+
+                # Wait for all threads to complete
+                while finished_task < len(futures):
+                    progress_bar.refresh()
+                    for future_dict in futures:
+                        # If exception occurs in one of the thread, restart the thread with its specific chunk
+                        if future_dict['future'].exception():
+                            print(
+                                f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
+                            backup_future_chunk = executor.submit(self.translate_converted, chunks[future_dict['idx']],
+                                                                  f"Backup chunk {future_dict['idx']}", Translator())
+                            backup_future_chunk.add_done_callback(callback_done)
+                            backup_future_dict = {"future": backup_future_chunk,
+                                                  "idx": future_dict['idx']}
+                            futures[future_dict['idx']] = backup_future_dict
+                            continue
+                        elif future_dict['future'].result():
+                            continue
+                        # translated_data += future_dict['future'].result()
 
             if large_chunk:
                 if not self.converted_data_translated:

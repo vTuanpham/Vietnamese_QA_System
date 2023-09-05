@@ -1,12 +1,12 @@
 transformers
-datasets
-pytorch
+--index-url https://download.pytorch.org/whl/cu117
+torch==2.0.0+cu117
 peft
 tokenizers
-py_vncorenlp
 --prefer-binary --extra-index-url=https://jllllll.github.io/bitsandbytes-windows-webui
 bitsandbytes
 sentencepiece
+sentence-transformers
 datasets
 langchain
 accelerate
