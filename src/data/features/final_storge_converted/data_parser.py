@@ -138,6 +138,11 @@ class DataParser(metaclass=ForceBaseCallMeta):
         for key in keys:
             if key in self.target_fields:
                 type = "str" if isinstance(example[key], str) else "list"
+                if example[key] == "":
+                    continue
+                if len(example[key]) > 15000:
+                    warnings.warn("\n Example" + example["qas_id"] + " have field len larger than 15000")
+                    example[key] = example[key][:15000]
                 example[key] = self.translate_en2vi(example[key], type, translator)
 
         return example
