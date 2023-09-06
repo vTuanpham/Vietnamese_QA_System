@@ -98,7 +98,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
         return True
 
     @staticmethod
-    def id_generator(size=6, chars=string.ascii_uppercase + string.digits):
+    def id_generator(size=6, chars=string.ascii_uppercase + string.digits) -> str:
         return ''.join(random.choice(chars) for _ in range(size))
 
     def inject_random_ctx(self, docs: List[str], max_docs: int = 9, random_range: int = 20) -> List[str]:
@@ -220,12 +220,12 @@ class DataParser(metaclass=ForceBaseCallMeta):
                     nonlocal finished_task
                     nonlocal manager
                     lock = manager.Lock()
-                    if future.result():
+                    if not future.exception():
                         with lock:
                             translated_data += future.result()
                             finished_task += 1
                             print("Task finished, adding translated data to result")
-                    elif future.exception():
+                    else:
                         print(f"Task failed, \nrestarting thread when others finished")
                         pass
 

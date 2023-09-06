@@ -261,6 +261,27 @@ PROMPT_INPUT20 = f"Xem xét thông tin sau: [CONTEXT]. "  \
                  f"Hãy cùng tôi tìm câu trả lời cho câu hỏi sau hoặc thực hiện yêu cầu sau: [QUESTION]. "    \
                  f"Nếu cần thông tin bổ sung, hãy yêu cầu hoặc hỏi một câu hỏi khác. [EOS]"
 
+GENERIC_SYSTEM_PROMPT1 = "You are an AI assistant. You will be given a task. You must generate an answer."
+GENERIC_SYSTEM_PROMPT2 = "As an AI assistant, your objective is to provide a response to the given task."
+GENERIC_SYSTEM_PROMPT3 = "Your role is that of an AI assistant. Your task is to produce a coherent answer to the following."
+GENERIC_SYSTEM_PROMPT4 = "In this scenario, you are functioning as an AI assistant. Your duty is to generate a response."
+GENERIC_SYSTEM_PROMPT5 = "Imagine you are an AI assistant tasked with generating a reply. Provide a response."
+GENERIC_SYSTEM_PROMPT6 = "Your function is that of an AI assistant. Your mission is to generate a response."
+GENERIC_SYSTEM_PROMPT7 = "In your role as an AI assistant, you are responsible for providing a well-formed response."
+GENERIC_SYSTEM_PROMPT8 = "As an AI assistant, your goal is to generate an informative response to the following task."
+GENERIC_SYSTEM_PROMPT9 = "You are functioning as an AI assistant. Your objective is to produce a relevant answer."
+GENERIC_SYSTEM_PROMPT10 = "Imagine you are an AI assistant. Your task is to generate a response to the following."
+GENERIC_SYSTEM_PROMPT11 = "Your role is that of an AI assistant. Your duty is to provide a response."
+GENERIC_SYSTEM_PROMPT12 = "In this scenario, you are functioning as an AI assistant. Your mission is to generate a reply."
+GENERIC_SYSTEM_PROMPT13 = "Your function is that of an AI assistant. Your responsibility is to generate a coherent answer."
+GENERIC_SYSTEM_PROMPT14 = "In your role as an AI assistant, you are tasked with providing a well-structured response."
+GENERIC_SYSTEM_PROMPT15 = "As an AI assistant, your goal is to generate a meaningful response to the following task."
+GENERIC_SYSTEM_PROMPT16 = "You are functioning as an AI assistant. Your task is to produce a relevant answer."
+GENERIC_SYSTEM_PROMPT17 = "Imagine you are an AI assistant. Your objective is to generate a response."
+GENERIC_SYSTEM_PROMPT18 = "Your role is that of an AI assistant. Your responsibility is to provide a response."
+GENERIC_SYSTEM_PROMPT19 = "In this scenario, you are functioning as an AI assistant. Your goal is to generate a reply."
+GENERIC_SYSTEM_PROMPT20 = "Your function is that of an AI assistant. Your task is to provide a well-informed answer."
+
 NO_DOCS_MESSAGE1 = f" Không documents nào có điểm đủ cao để query cho câu hỏi. "
 NO_DOCS_MESSAGE2 = f" Database không chứa documents nào phù hợp cho câu hỏi. "
 
@@ -307,12 +328,17 @@ class QA_TEMPLATE(TEMPLATE):
             warnings.warn("Missing field(s) in template!")
         return template
 
+    get_generic_system_prompt = partialmethod(get, answer=None,
+                                                   context=None,
+                                                   question=None,
+                                                   type="GENERIC_SYSTEM_PROMPT")
     get_prompt = partialmethod(get, answer=None, type="PROMPT_INPUT")
     get_neg_response = partialmethod(get, answer=None, context=None, type="NO_ANS_RESPONSE")
     get_trivial_response = partialmethod(get, context=None, type="TRIVIAL_ANS")
     get_norm_response = partialmethod(get, question=None, context=None, type="RESPONSE")
     get_no_docs_msg = partialmethod(get, question=None, context=None, answer=None, type="NO_DOCS_MESSAGE")
 
+    get_random_generic_system_prompt = partialmethod(get_generic_system_prompt, id=TEMPLATE.get_random_id)
     get_random_prompt = partialmethod(get_prompt, id=TEMPLATE.get_random_id)
     get_random_neg_response = partialmethod(get_neg_response, id=TEMPLATE.get_random_id)
     get_random_trivial_response = partialmethod(get_trivial_response, id=TEMPLATE.get_random_id)
@@ -376,7 +402,10 @@ if __name__ == "__main__":
     #                                             answer=python_question_contexts[0])
     # print(prompt)
 
-    prompt = QA_TEMPLATE().get_random_prompt(question=python_questions[0],
-                                             context=python_question_contexts[0])
+    # prompt = QA_TEMPLATE().get_random_prompt(question=python_questions[0],
+    #                                          context=python_question_contexts[0])
+    #
+    # print(prompt)
 
+    prompt = QA_TEMPLATE().get_random_generic_system_prompt()
     print(prompt)

@@ -6,6 +6,8 @@ sys.path.insert(0, r'./')
 from os.path import join
 from typing import Optional, Dict, List, Union, Set
 
+import numpy as np
+
 import torch
 import datasets
 from torch.utils.data import RandomSampler, SequentialSampler
@@ -172,7 +174,7 @@ if __name__ == "__main__":
         "text_column": "prompt",
         "target_column": "target",
         "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json"],
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json"],
         "batch_size": 8,
         "seed": 42,
         "max_train_samples": 450,
@@ -190,7 +192,9 @@ if __name__ == "__main__":
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
-    for data in iter(qa_dataloader_instance['train']):
-        print(qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
-        break
-
+    for idx, data in enumerate(iter(qa_dataloader_instance['train'])):
+        print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        labels = data['labels'].cpu().numpy()
+        labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
+        print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        if idx == 50: break
