@@ -2,6 +2,7 @@ import json
 import math
 import random
 import sys
+import copy
 sys.path.insert(0, r'./')
 from os.path import join
 from typing import Optional, Dict, List, Union, Set
@@ -14,15 +15,17 @@ from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 from transformers import AutoTokenizer
 
-from configs import AdvanceQAExample, AdvanceInstructSample
+from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 
 
 class AdvanceQa(Dataset):
     def __init__(self, json_file_paths: List[str], num_examples,
-                 config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample):
+                 config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
+                 get_example: bool = False):
         num_examples_each = math.floor(num_examples/len(json_file_paths))
         self.full_json_data = []
         self.config_type = config_type
+        self.get_example = get_example
         for json_path in json_file_paths:
             with open(json_path, encoding='utf-8') as jfile:
                 json_data = json.load(jfile)
@@ -37,7 +40,7 @@ class AdvanceQa(Dataset):
         except KeyError:
             raise f"Missing keys to fill for {self.full_json_data[idx]} in item {idx}"
 
-        return advance_qapair
+        return advance_qapair.get_example(is_training=True) if self.get_example else advance_qapair
 
 
 class QADataloader:
@@ -78,22 +81,29 @@ class QADataloader:
 
     def __call__(self, *args, **kwargs) -> Union[Set[DataLoader],Set]:
         dataloaders = {}
+        datasets = {}
         if self.train_file is not None:
             print('\nLoading train datasets' + '.' * 10)
             train_dataset = self.load_data(self.train_file, self.max_train_samples)
             dataloaders['train'] = self.get_dataloader(train_dataset, shuffle_flag=True)
+            datasets['train'] = copy.deepcopy(train_dataset)
+            datasets['train'].get_example = True
 
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
             eval_dataset = self.load_data(self.val_file, self.max_eval_samples)
             dataloaders['eval'] = self.get_dataloader(eval_dataset)
+            datasets['eval'] = copy.deepcopy(eval_dataset)
+            datasets['eval'].get_example = True
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file, self.max_predict_samples)
             dataloaders['test'] = self.get_dataloader(test_dataset)
+            datasets['test'] = copy.deepcopy(test_dataset)
+            datasets['test'].get_example = True
 
-        return dataloaders
+        return dataloaders, datasets
 
     def load_data(self, data_files: List[str], num_example: int=10000) -> AdvanceQa:
         """
@@ -161,7 +171,7 @@ class QADataloader:
                                 sampler=sampler,
                                 collate_fn=self.dynamic_collate,
                                 batch_size=self.batch_size,
-                                drop_last=True,
+                                drop_last=False,
                                 pin_memory=True if torch.cuda.is_available() else False
                                 )
 
@@ -170,11 +180,13 @@ class QADataloader:
 
 if __name__ == "__main__":
     dataloader_args = {
-        "model_name": "google/mt5-base",
+        "model_name": "google/flan-t5-small",
         "text_column": "prompt",
         "target_column": "target",
         "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json"],
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json",
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json",
+                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json"],
         "batch_size": 8,
         "seed": 42,
         "max_train_samples": 450,
@@ -197,4 +209,4 @@ if __name__ == "__main__":
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
         print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
-        if idx == 50: break
+        if idx == 100: break
