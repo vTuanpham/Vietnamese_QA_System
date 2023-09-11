@@ -1,3 +1,4 @@
+import gc
 import json
 import math
 import random
@@ -10,8 +11,9 @@ from typing import Optional, Dict, List, Union, Set
 import numpy as np
 
 import torch
+import torch.distributed as dist
 import datasets
-from torch.utils.data import RandomSampler, SequentialSampler
+from torch.utils.data import RandomSampler, SequentialSampler, DistributedSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 from transformers import AutoTokenizer
 
@@ -30,6 +32,8 @@ class AdvanceQa(Dataset):
             with open(json_path, encoding='utf-8') as jfile:
                 json_data = json.load(jfile)
                 self.full_json_data += json_data[:num_examples_each]
+            del json_data
+            gc.collect()
 
     def __len__(self) -> int:
         return len(self.full_json_data)
@@ -52,8 +56,10 @@ class QADataloader:
                  val_file: Optional[Union[str, List[str]]]=None,
                  test_file: Optional[Union[str, List[str]]]=None,
                  batch_size: int = 8,
+                 num_worker: int = 1,
                  seed: int = 42,
                  use_fast_tokenizer: bool=True,
+                 return_dataset: bool=False,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -71,7 +77,9 @@ class QADataloader:
         self.test_file = test_file
         self.batch_size = batch_size
 
+        self.return_dataset = return_dataset
         self.seed = seed
+        self.num_worker = num_worker
         self.generator = torch.Generator()
         self.generator.manual_seed(self.seed)
 
@@ -86,24 +94,27 @@ class QADataloader:
             print('\nLoading train datasets' + '.' * 10)
             train_dataset = self.load_data(self.train_file, self.max_train_samples)
             dataloaders['train'] = self.get_dataloader(train_dataset, shuffle_flag=True)
-            datasets['train'] = copy.deepcopy(train_dataset)
-            datasets['train'].get_example = True
+            if self.return_dataset:
+                datasets['train'] = copy.deepcopy(train_dataset)
+                datasets['train'].get_example = True
 
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
             eval_dataset = self.load_data(self.val_file, self.max_eval_samples)
             dataloaders['eval'] = self.get_dataloader(eval_dataset)
-            datasets['eval'] = copy.deepcopy(eval_dataset)
-            datasets['eval'].get_example = True
+            if self.return_dataset:
+                datasets['eval'] = copy.deepcopy(eval_dataset)
+                datasets['eval'].get_example = True
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file, self.max_predict_samples)
             dataloaders['test'] = self.get_dataloader(test_dataset)
-            datasets['test'] = copy.deepcopy(test_dataset)
-            datasets['test'].get_example = True
+            if self.return_dataset:
+                datasets['test'] = copy.deepcopy(test_dataset)
+                datasets['test'].get_example = True
 
-        return dataloaders, datasets
+        return (dataloaders, datasets) if self.return_dataset else dataloaders
 
     def load_data(self, data_files: List[str], num_example: int=10000) -> AdvanceQa:
         """
@@ -136,8 +147,12 @@ class QADataloader:
             dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are padded,
             and the target IDs are masked to exclude padded values.
         """
-        inputs = [example.get_example(is_training=self.train_file is not None)[self.text_column] for example in batch]
-        targets = [example.get_example(is_training=self.train_file is not None)[self.target_column] for example in batch]
+        if not isinstance(batch[0], dict):
+            inputs = [example.get_example(is_training=self.train_file is not None)[self.text_column] for example in batch]
+            targets = [example.get_example(is_training=self.train_file is not None)[self.target_column] for example in batch]
+        else:
+            inputs = [example[self.text_column] for example in batch]
+            targets = [example[self.target_column] for example in batch]
 
         inp_tokens = self.tokenizer.batch_encode_plus(
             inputs,
@@ -159,6 +174,12 @@ class QADataloader:
                 "attention_mask": inp_tokens["attention_mask"],
                 "labels": target_ids}
 
+    @staticmethod
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2 ** 32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
     def get_dataloader(self, dataset, shuffle_flag: bool = False) -> DataLoader:
         """
         :param dataset: (Dataset): dataset from which to load the data.
@@ -166,13 +187,16 @@ class QADataloader:
                 at every epoch (default: ``False``).
         :return: a dataset
         """
-        sampler = RandomSampler(data_source=dataset,generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
+        sampler = RandomSampler(data_source=dataset, generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
+        # if torch.cuda.is_available():
+        #     sampler = DistributedSampler(dataset=dataset, shuffle=shuffle_flag, seed=self.seed)
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
                                 collate_fn=self.dynamic_collate,
                                 batch_size=self.batch_size,
                                 drop_last=False,
-                                pin_memory=True if torch.cuda.is_available() else False
+                                pin_memory=torch.cuda.is_available(),
+                                worker_init_fn=self.seed_worker,
                                 )
 
         return dataloader

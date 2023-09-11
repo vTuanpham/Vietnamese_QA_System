@@ -12,3 +12,4 @@ langchain
 accelerate
 googletrans==3.1.0a0
 thefuzz[speedup]
+ujson

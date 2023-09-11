@@ -1,5 +1,7 @@
 import gc
 import os
+import warnings
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import sys
 sys.path.insert(0,r'./')
@@ -8,9 +10,16 @@ import threading
 import numpy as np
 import psutil
 import torch
+try:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+except Exception:
+    raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.utils.memory import find_executable_batch_size
+from accelerate.utils import DistributedType
+
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -21,8 +30,10 @@ from transformers import \
      set_seed,
      BitsAndBytesConfig,
      GenerationConfig)
+from transformers.trainer_pt_utils import get_parameter_names
 
-from peft import LoraConfig, TaskType, get_peft_model
+import bitsandbytes as bnb
+from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
 
 from src.data import QADataloader
 from src.data.configs import AdvanceInstructSample, AdvanceQAExample
@@ -113,10 +124,27 @@ class TorchTracemalloc:
         # print(f"delta used/peak {self.used:4d}/{self.peaked:4d}")
 
 
+# def merge_adapter(model_name_or_path: str, lora_model: PeftModel):
+#     replaced_base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, torch_dtype=torch.bfloat16)
+#
+#     return merged_model
+
+
 def main():
-    accelerator = Accelerator(gradient_accumulation_steps=40)
+    accelerator = Accelerator()
     model_name_or_path = "google/umt5-small"
     dataset_name = "Instruction_en-vn_mix"
+    batch_size = 1
+    text_column = "prompt"
+    label_column = "target"
+    lr = 5e-4
+    num_epochs = 1
+    seed = 43
+    do_test = False
+    do_eval = True
+    gradient_checkpointing = True
+    weight_decay = 0.2
+    set_seed(seed)
 
     dataloader_args = {
         "model_name": model_name_or_path,
@@ -130,12 +158,13 @@ def main():
                      r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k_translated.json"],
         "test_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json",
                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json"],
-        "batch_size": 1,
-        "seed": 42,
+        "batch_size": batch_size,
+        "seed": seed,
         "max_train_samples": 10,
-        "max_eval_samples": 2,
-        "max_predict_samples": 2,
-        "config_type": AdvanceInstructSample
+        "max_eval_samples": 4,
+        "max_predict_samples": 4,
+        "config_type": AdvanceInstructSample,
+        "num_worker": 1
     }
 
     double_quant_config = BitsAndBytesConfig(
@@ -154,17 +183,8 @@ def main():
     )
     generation_config = GenerationConfig.from_pretrained(
         model_name_or_path, top_k=1, foo=False, do_sample=False, return_unused_kwargs=False,
-        no_repeat_ngram_size=3, num_beams=1, early_stopping=True
+        no_repeat_ngram_size=3, num_beams=1, early_stopping=True, max_new_tokens=256
     )
-    text_column = "prompt"
-    label_column = "target"
-    lr = 5e-5
-    num_epochs = 1
-    # batch_size = 8
-    seed = 42
-    do_test = False
-    gradient_checkpointing = True
-    set_seed(seed)
 
     # dataset = load_dataset("ought/raft", dataset_name)
     # classes = [k.replace("_", " ") for k in dataset["train"].features["Label"].names]
@@ -174,7 +194,7 @@ def main():
     #     num_proc=1,
     # )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True, model_max_length=512)
     # target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
 
     # def preprocess_function(examples):
@@ -217,22 +237,23 @@ def main():
     # test_dataloader = DataLoader(test_dataset, collate_fn=collate_fn, batch_size=batch_size, pin_memory=True)
 
     # creating model
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, quantization_config=double_quant_config,
-                                                                      torch_dtype=torch.bfloat16)
-    for param in model.parameters():
-        param.requires_grad = False  # freeze the model - train adapters later
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
+                                                  quantization_config=double_quant_config,
+                                                  torch_dtype=torch.bfloat16)
+    # for param in model.parameters():
+    #     param.requires_grad = False  # freeze the model - train adapters later
         # if param.ndim == 1:
         #     # cast the small parameters (e.g. layernorm) to fp32 for stability
         #     param.data = param.data.to(torch.bfloat16)
 
-    model.gradient_checkpointing_enable()  # reduce number of stored activations
-    if gradient_checkpointing:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    # model.gradient_checkpointing_enable()  # reduce number of stored activations
+    # if gradient_checkpointing:
+    #     if hasattr(model, "enable_input_require_grads"):
+    #         model.enable_input_require_grads()
+    #     else:
+    #         def make_inputs_require_grad(module, input, output):
+    #             output.requires_grad_(True)
+    #         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # class CastOutputToFloat(nn.Sequential):
     #     def forward(self, x): return super().forward(x).to(torch.bfloat16)
@@ -240,18 +261,43 @@ def main():
     # model.lm_head = CastOutputToFloat(model.lm_head)
 
     print(model)
-    model = get_peft_model(model, peft_config)
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+    model = get_peft_model(model, peft_config, adapter_name=dataset_name)
     model.print_trainable_parameters()
 
     # optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    decay_parameters = get_parameter_names(model, [nn.LayerNorm])
+    decay_parameters = [name for name in decay_parameters if "bias" not in name]
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if n in decay_parameters],
+            "weight_decay": weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if n not in decay_parameters],
+            "weight_decay": 0.0,
+        },
+    ]
+
+    optimizer = bnb.optim.Adam8bit(
+        optimizer_grouped_parameters,
+        lr=lr,
+    )
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # lr scheduler
     lr_scheduler = get_linear_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=0,
+        num_warmup_steps=1,
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
+    try:
+        model = model.to_bettertransformer()
+    except NotImplementedError:
+        warnings.warn(f"This model type {model_name_or_path} is not yet "
+                      f"support for BetterTransformer, please change model type if "
+                      f"you still want to use it.\n Continue running without it...")
+        pass
 
     model, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         model, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
@@ -299,52 +345,56 @@ def main():
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=}")
 
-        model.eval()
-        eval_preds = []
-        with TorchTracemalloc() as tracemalloc:
-            unwrapped_model = accelerator.unwrap_model(model)
-            for _, batch in enumerate(tqdm(eval_dataloader)):
-                batch = {k: v for k, v in batch.items() if k != "labels"}
-                with torch.no_grad():
-                    outputs = unwrapped_model.generate(
-                        **batch, generation_config=generation_config, synced_gpus=is_ds_zero_3
-                    )  # synced_gpus=True for DS-stage 3
-                outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+        if do_eval:
+            model.eval()
+            eval_preds = []
+            with TorchTracemalloc() as tracemalloc:
+                # merged_model = merge_adapter(model_name_or_path, accelerator.unwrap_model(model))
+                for idx, batch in enumerate(tqdm(eval_dataloader)):
+                    # Pass dummy batch to avoid caffe error
+                    if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                        model(**batch)
+                    batch = {k: v for k, v in batch.items() if k != "labels"}
+                    with torch.no_grad():
+                        outputs = accelerator.unwrap_model(model).generate(
+                            **batch, generation_config=generation_config, synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False
+                        )  # synced_gpus=True for DS-stage 3
+                    outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                    preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                    eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
-        # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
-        accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
-        accelerator.print("GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
-        accelerator.print("GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
-        accelerator.print(
-            "GPU Total Peak Memory consumed during the eval (max): {}".format(
-                tracemalloc.peaked + b2mb(tracemalloc.begin)
+            # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
+            accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
+            accelerator.print("GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
+            accelerator.print("GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
+            accelerator.print(
+                "GPU Total Peak Memory consumed during the eval (max): {}".format(
+                    tracemalloc.peaked + b2mb(tracemalloc.begin)
+                )
             )
-        )
 
-        accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
-        accelerator.print("CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
-        accelerator.print("CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
-        accelerator.print(
-            "CPU Total Peak Memory consumed during the eval (max): {}".format(
-                tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+            accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
+            accelerator.print("CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
+            accelerator.print("CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
+            accelerator.print(
+                "CPU Total Peak Memory consumed during the eval (max): {}".format(
+                    tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+                )
             )
-        )
 
-        correct = 0
-        total = 0
-        assert len(eval_preds) == len(
-            qa_dataset_instance["eval"]
-        ), f"{len(eval_preds)} != {len(qa_dataset_instance['eval'])}"
-        for pred, true in zip(eval_preds, qa_dataset_instance["eval"]):
-            if pred.strip() == true[label_column].strip():
-                correct += 1
-            total += 1
-        accuracy = correct / total * 100
-        accelerator.print(f"{accuracy=}")
-        accelerator.print(f"{eval_preds[:10]=}")
-        accelerator.print(f"{[example[label_column] for idx, example in enumerate(qa_dataset_instance['eval'])]=}")
+            correct = 0
+            total = 0
+            assert len(eval_preds) == len(
+                qa_dataset_instance["eval"]
+            ), f"{len(eval_preds)} != {len(qa_dataset_instance['eval'])}"
+            for pred, true in zip(eval_preds, qa_dataset_instance["eval"]):
+                if pred.strip() == true[label_column].strip():
+                    correct += 1
+                total += 1
+            accuracy = correct / total * 100
+            accelerator.print(f"{accuracy=}")
+            accelerator.print(f"{eval_preds[:10]=}")
+            accelerator.print(f"{[example[label_column] for idx, example in enumerate(qa_dataset_instance['eval'])]=}")
 
     if do_test:
         model.eval()
