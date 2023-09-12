@@ -1,11 +1,14 @@
 import gc
 import json
+import os
 import math
 import random
 import sys
 import copy
 sys.path.insert(0, r'./')
 from os.path import join
+
+from tqdm.auto import tqdm
 from typing import Optional, Dict, List, Union, Set
 
 import numpy as np
@@ -15,6 +18,8 @@ import torch.distributed as dist
 import datasets
 from torch.utils.data import RandomSampler, SequentialSampler, DistributedSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
+
+from datasets import load_dataset
 from transformers import AutoTokenizer
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
@@ -29,11 +34,22 @@ class AdvanceQa(Dataset):
         self.config_type = config_type
         self.get_example = get_example
         for json_path in json_file_paths:
-            with open(json_path, encoding='utf-8') as jfile:
-                json_data = json.load(jfile)
-                self.full_json_data += json_data[:num_examples_each]
-            del json_data
-            gc.collect()
+            assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
+            try:
+                file_name = os.path.basename(json_path)
+                extension = json_path.split(".")[-1]
+                print(f"Loading {num_examples_each} from {file_name}...")
+                iterable_json_data = load_dataset(extension, data_files=json_path,
+                                                  streaming=True, keep_in_memory=False)
+                for idx, data in enumerate(iter(iterable_json_data['train'])):
+                    if idx > num_examples_each:
+                        break
+                    self.full_json_data.append(data)
+                print(f"Finished loading from {file_name} with total loaded {len(self.full_json_data)} examples")
+                del iterable_json_data,
+                gc.collect()
+            except Exception as e:
+                raise f"An error occurred while reading the data: {e}"
 
     def __len__(self) -> int:
         return len(self.full_json_data)
@@ -218,19 +234,19 @@ if __name__ == "__main__":
     }
 
     idx = random.randint(0, 400)
-    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json"],
+    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translatedFormated.json"],
                            num_examples=400,
                            config_type=AdvanceInstructSample)
-    print(qa_dataset[idx])
-    print(qa_dataset[idx].get_dict)
-    print(qa_dataset[idx].get_dict_str)
-    print(qa_dataset[idx].get_example(is_training=True))
+    # print(qa_dataset[idx])
+    # print(qa_dataset[idx].get_dict)
+    # print(qa_dataset[idx].get_dict_str)
+    # print(qa_dataset[idx].get_example(is_training=True))
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
     for idx, data in enumerate(iter(qa_dataloader_instance['train'])):
-        print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        # print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        # print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
         if idx == 100: break

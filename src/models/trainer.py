@@ -132,6 +132,36 @@ class TorchTracemalloc:
 
 def main():
     accelerator = Accelerator()
+
+    ################################################################################
+    # QLoRA parameters
+    ################################################################################
+
+    # LoRA attention dimension
+    lora_r = 64
+
+    # Alpha parameter for LoRA scaling
+    lora_alpha = 16
+
+    # Dropout probability for LoRA layers
+    lora_dropout = 0.03
+
+    ################################################################################
+    # bitsandbytes parameters
+    ################################################################################
+
+    # Activate 4-bit precision base model loading
+    use_4bit = True
+
+    # Compute dtype for 4-bit base models
+    bnb_4bit_compute_dtype = "float16"
+
+    # Quantization type (fp4 or nf4)
+    bnb_4bit_quant_type = "nf4"
+
+    # Activate nested quantization for 4-bit base models (double quantization)
+    use_nested_quant = True
+
     model_name_or_path = "google/umt5-small"
     dataset_name = "Instruction_en-vn_mix"
     batch_size = 1
@@ -143,6 +173,7 @@ def main():
     do_test = False
     do_eval = True
     gradient_checkpointing = True
+    return_dataset = True
     weight_decay = 0.2
     set_seed(seed)
 
@@ -150,40 +181,52 @@ def main():
         "model_name": model_name_or_path,
         "text_column": "prompt",
         "target_column": "target",
-        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json"],
-        "val_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k.json",
-                     r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k_translated.json"],
-        "test_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json",
-                      r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json"],
+        "train_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+                       r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
+                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
+                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"],
+        "val_file": [r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70kFormated.json",
+                     r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70k_translatedFormated.json"],
+        "test_file": [r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json",
+                      r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json"],
         "batch_size": batch_size,
         "seed": seed,
         "max_train_samples": 10,
         "max_eval_samples": 4,
         "max_predict_samples": 4,
         "config_type": AdvanceInstructSample,
-        "num_worker": 1
+        "num_worker": 1,
+        "return_dataset": return_dataset
     }
 
+    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
+
+    # Check GPU compatibility with bfloat16
+    if compute_dtype == torch.float16 and use_4bit:
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 8:
+            print("=" * 80)
+            print("Your GPU supports bfloat16: accelerate training with bf16=True")
+            print("=" * 80)
+
     double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_type=torch.bfloat16,
-        bnb_4bit_quant_type='nf4'
+        load_in_4bit=use_4bit,
+        bnb_4bit_use_double_quant=use_nested_quant,
+        bnb_4bit_compute_type=compute_dtype,
+        bnb_4bit_quant_type=bnb_4bit_quant_type
     )
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_2_SEQ_LM,
         inference_mode=False,
-        r=8, lora_alpha=32,
-        lora_dropout=0.1,
+        r=lora_r, lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         target_modules=['q', 'k', 'v', 'o', 'wi_1', 'wo', 'wi_0'],
         bias="lora_only"
     )
     generation_config = GenerationConfig.from_pretrained(
-        model_name_or_path, top_k=1, foo=False, do_sample=False, return_unused_kwargs=False,
-        no_repeat_ngram_size=3, num_beams=1, early_stopping=True, max_new_tokens=256
+        model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
+        no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=256, max_time=5,
+        penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2, encoder_repetition_penalty=1.8
     )
 
     # dataset = load_dataset("ought/raft", dataset_name)
@@ -195,6 +238,8 @@ def main():
     # )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True, model_max_length=512)
+    tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
+
     # target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
 
     # def preprocess_function(examples):
@@ -225,7 +270,10 @@ def main():
     # test_dataset = processed_datasets["test"]
 
     qa_dataloader = QADataloader(**dataloader_args)
-    qa_dataloader_instance, qa_dataset_instance = qa_dataloader.__call__()
+    if return_dataset:
+        qa_dataloader_instance, qa_dataset_instance = qa_dataloader.__call__()
+    else:
+        qa_dataloader_instance = qa_dataloader.__call__()
 
     # def collate_fn(examples):
     #     return tokenizer.pad(examples, padding="longest", return_tensors="pt")
@@ -237,9 +285,14 @@ def main():
     # test_dataloader = DataLoader(test_dataset, collate_fn=collate_fn, batch_size=batch_size, pin_memory=True)
 
     # creating model
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                  quantization_config=double_quant_config,
-                                                  torch_dtype=torch.bfloat16)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, quantization_config=double_quant_config)
+    model.config.use_cache = False
+
+    # Print out the model keys
+    layer_names = model.state_dict().keys()
+    for name in layer_names:
+        print(name)
+
     # for param in model.parameters():
     #     param.requires_grad = False  # freeze the model - train adapters later
         # if param.ndim == 1:
@@ -260,8 +313,8 @@ def main():
     #
     # model.lm_head = CastOutputToFloat(model.lm_head)
 
-    print(model)
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+    model = torch.compile(model, mode="max-autotune")
     model = get_peft_model(model, peft_config, adapter_name=dataset_name)
     model.print_trainable_parameters()
 
@@ -279,11 +332,11 @@ def main():
         },
     ]
 
-    optimizer = bnb.optim.Adam8bit(
+    optimizer = bnb.optim.PagedAdam8bit(
         optimizer_grouped_parameters,
         lr=lr,
     )
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    # optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
 
     # lr scheduler
     lr_scheduler = get_linear_schedule_with_warmup(
