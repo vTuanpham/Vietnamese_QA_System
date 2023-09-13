@@ -1,22 +1,18 @@
 import gc
-import json
 import os
 import math
 import random
 import sys
 import copy
 sys.path.insert(0, r'./')
-from os.path import join
 
 from tqdm.auto import tqdm
-from typing import Optional, Dict, List, Union, Set
+from typing import Optional, List, Union, Set
 
 import numpy as np
 
 import torch
-import torch.distributed as dist
-import datasets
-from torch.utils.data import RandomSampler, SequentialSampler, DistributedSampler
+from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
@@ -28,12 +24,12 @@ from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 class AdvanceQa(Dataset):
     def __init__(self, json_file_paths: List[str], num_examples,
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
-                 get_example: bool = False):
+                 get_example: bool = True, split: str='train'):
         num_examples_each = math.floor(num_examples/len(json_file_paths))
         self.full_json_data = []
         self.config_type = config_type
         self.get_example = get_example
-        for json_path in json_file_paths:
+        for json_path in tqdm(json_file_paths, desc=f"Loading {split} data"):
             assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
             try:
                 file_name = os.path.basename(json_path)
@@ -44,7 +40,14 @@ class AdvanceQa(Dataset):
                 for idx, data in enumerate(iter(iterable_json_data['train'])):
                     if idx > num_examples_each:
                         break
-                    self.full_json_data.append(data)
+                    if get_example:
+                        try:
+                            config_data = self.config_type(**data).get_example(is_training=True)
+                        except KeyError:
+                            raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}"
+                    else:
+                        config_data = data
+                    self.full_json_data.append(config_data)
                 print(f"Finished loading from {file_name} with total loaded {len(self.full_json_data)} examples")
                 del iterable_json_data,
                 gc.collect()
@@ -55,12 +58,14 @@ class AdvanceQa(Dataset):
         return len(self.full_json_data)
 
     def __getitem__(self, idx):
-        try:
-            advance_qapair = self.config_type(**self.full_json_data[idx])
-        except KeyError:
-            raise f"Missing keys to fill for {self.full_json_data[idx]} in item {idx}"
 
-        return advance_qapair.get_example(is_training=True) if self.get_example else advance_qapair
+        if not self.get_example:
+            try:
+                config_data = self.config_type(**self.full_json_data[idx])
+            except KeyError:
+                raise f"Missing keys to fill for {config_data} in item {idx}"
+            return config_data
+        return self.full_json_data[idx]
 
 
 class QADataloader:
@@ -71,11 +76,12 @@ class QADataloader:
                  train_file: Union[str, List[str]],
                  val_file: Optional[Union[str, List[str]]]=None,
                  test_file: Optional[Union[str, List[str]]]=None,
-                 batch_size: int = 8,
+                 train_batch_size: int = 8,
+                 eval_batch_size: int=16,
+                 test_batch_size: int=16,
                  num_worker: int = 1,
                  seed: int = 42,
                  use_fast_tokenizer: bool=True,
-                 return_dataset: bool=False,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -91,9 +97,10 @@ class QADataloader:
         self.train_file = train_file
         self.val_file = val_file
         self.test_file = test_file
-        self.batch_size = batch_size
+        self.train_batch_size = train_batch_size
+        self.eval_batch_size = eval_batch_size
+        self.test_batch_size = test_batch_size
 
-        self.return_dataset = return_dataset
         self.seed = seed
         self.num_worker = num_worker
         self.generator = torch.Generator()
@@ -105,34 +112,33 @@ class QADataloader:
 
     def __call__(self, *args, **kwargs) -> Union[Set[DataLoader],Set]:
         dataloaders = {}
-        datasets = {}
         if self.train_file is not None:
             print('\nLoading train datasets' + '.' * 10)
             train_dataset = self.load_data(self.train_file, self.max_train_samples)
-            dataloaders['train'] = self.get_dataloader(train_dataset, shuffle_flag=True)
-            if self.return_dataset:
-                datasets['train'] = copy.deepcopy(train_dataset)
-                datasets['train'].get_example = True
+            dataloaders['train'] = self.get_dataloader(train_dataset,
+                                                       shuffle_flag=True,
+                                                       batch_size=self.train_batch_size)
 
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
             eval_dataset = self.load_data(self.val_file, self.max_eval_samples)
-            dataloaders['eval'] = self.get_dataloader(eval_dataset)
-            if self.return_dataset:
-                datasets['eval'] = copy.deepcopy(eval_dataset)
-                datasets['eval'].get_example = True
+            dataloaders['eval'] = self.get_dataloader(eval_dataset,
+                                                      batch_size=self.eval_batch_size)
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file, self.max_predict_samples)
-            dataloaders['test'] = self.get_dataloader(test_dataset)
-            if self.return_dataset:
-                datasets['test'] = copy.deepcopy(test_dataset)
-                datasets['test'].get_example = True
+            dataloaders['test'] = self.get_dataloader(test_dataset,
+                                                      batch_size=self.test_batch_size)
 
-        return (dataloaders, datasets) if self.return_dataset else dataloaders
+        self.dataset = {'train': train_dataset, 'eval': eval_dataset, 'test': test_dataset}
 
-    def load_data(self, data_files: List[str], num_example: int=10000) -> AdvanceQa:
+        return dataloaders
+
+    def load_data(self, data_files: List[str],
+                  num_example: int=10000,
+                  split: str='train',
+                  get_example: bool=True) -> AdvanceQa:
         """
         Loads a dataset from a file on disk and returns it as a dictionary of Dataset objects.
 
@@ -145,9 +151,16 @@ class QADataloader:
             A dataset object loaded from all data_files that was divided equally
         """
         if num_example:
-            dataset = AdvanceQa(json_file_paths=data_files, num_examples=num_example, config_type=self.config_type)
+            dataset = AdvanceQa(json_file_paths=data_files,
+                                num_examples=num_example,
+                                config_type=self.config_type,
+                                split=split,
+                                get_example=get_example)
         else:
-            dataset = AdvanceQa(json_file_paths=data_files, config_type=self.config_type)
+            dataset = AdvanceQa(json_file_paths=data_files,
+                                config_type=self.config_type,
+                                split=split,
+                                get_example=get_example)
 
         return dataset
 
@@ -163,12 +176,9 @@ class QADataloader:
             dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are padded,
             and the target IDs are masked to exclude padded values.
         """
-        if not isinstance(batch[0], dict):
-            inputs = [example.get_example(is_training=self.train_file is not None)[self.text_column] for example in batch]
-            targets = [example.get_example(is_training=self.train_file is not None)[self.target_column] for example in batch]
-        else:
-            inputs = [example[self.text_column] for example in batch]
-            targets = [example[self.target_column] for example in batch]
+
+        inputs = [example[self.text_column] for example in batch]
+        targets = [example[self.target_column] for example in batch]
 
         inp_tokens = self.tokenizer.batch_encode_plus(
             inputs,
@@ -196,20 +206,19 @@ class QADataloader:
         np.random.seed(worker_seed)
         random.seed(worker_seed)
 
-    def get_dataloader(self, dataset, shuffle_flag: bool = False) -> DataLoader:
+    def get_dataloader(self, dataset, shuffle_flag: bool = False, batch_size: int=1) -> DataLoader:
         """
         :param dataset: (Dataset): dataset from which to load the data.
         :param shuffle_flag: set to ``True`` to have the data reshuffled
                 at every epoch (default: ``False``).
         :return: a dataset
         """
-        sampler = RandomSampler(data_source=dataset, generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
-        # if torch.cuda.is_available():
-        #     sampler = DistributedSampler(dataset=dataset, shuffle=shuffle_flag, seed=self.seed)
+        sampler = RandomSampler(data_source=dataset,
+                                generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
                                 collate_fn=self.dynamic_collate,
-                                batch_size=self.batch_size,
+                                batch_size=batch_size,
                                 drop_last=False,
                                 pin_memory=torch.cuda.is_available(),
                                 worker_init_fn=self.seed_worker,
@@ -223,10 +232,10 @@ if __name__ == "__main__":
         "model_name": "google/flan-t5-small",
         "text_column": "prompt",
         "target_column": "target",
-        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json"],
+        "train_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+                       r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
+                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
+                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"],
         "batch_size": 8,
         "seed": 42,
         "max_train_samples": 450,
@@ -234,19 +243,20 @@ if __name__ == "__main__":
     }
 
     idx = random.randint(0, 400)
-    qa_dataset = AdvanceQa(json_file_paths=[r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translatedFormated.json"],
+    qa_dataset = AdvanceQa(json_file_paths=[r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json"],
                            num_examples=400,
-                           config_type=AdvanceInstructSample)
-    # print(qa_dataset[idx])
-    # print(qa_dataset[idx].get_dict)
-    # print(qa_dataset[idx].get_dict_str)
-    # print(qa_dataset[idx].get_example(is_training=True))
+                           config_type=AdvanceInstructSample,
+                           get_example=False)
+    print(qa_dataset[idx])
+    print(qa_dataset[idx].get_dict)
+    print(qa_dataset[idx].get_dict_str)
+    print(qa_dataset[idx].get_example(is_training=True))
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
     for idx, data in enumerate(iter(qa_dataloader_instance['train'])):
-        # print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        # print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
-        if idx == 100: break
+        print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        if idx == 30: break
