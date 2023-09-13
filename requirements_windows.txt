@@ -11,5 +11,6 @@ datasets
 langchain
 accelerate
 googletrans==3.1.0a0
+optim
 thefuzz[speedup]
 ujson

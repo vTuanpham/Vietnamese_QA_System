@@ -1,14 +1,16 @@
 import gc
 import os
+import random
 import warnings
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import sys
 sys.path.insert(0,r'./')
+import psutil
 import threading
 
 import numpy as np
-import psutil
+
 import torch
 try:
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -16,9 +18,11 @@ try:
 except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import torch.nn as nn
+
 from accelerate import Accelerator
 from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import DistributedType
+from accelerate.state import AcceleratorState
 
 from datasets import load_dataset
 from torch.utils.data import DataLoader
@@ -31,6 +35,7 @@ from transformers import \
      BitsAndBytesConfig,
      GenerationConfig)
 from transformers.trainer_pt_utils import get_parameter_names
+from optimum.bettertransformer import BetterTransformer
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
@@ -121,69 +126,93 @@ class TorchTracemalloc:
         self.cpu_end = self.cpu_mem_used()
         self.cpu_used = b2mb(self.cpu_end - self.cpu_begin)
         self.cpu_peaked = b2mb(self.cpu_peak - self.cpu_begin)
-        # print(f"delta used/peak {self.used:4d}/{self.peaked:4d}")
 
-
-# def merge_adapter(model_name_or_path: str, lora_model: PeftModel):
-#     replaced_base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, torch_dtype=torch.bfloat16)
-#
-#     return merged_model
-
-
-def main():
+def train(training_args):
     accelerator = Accelerator()
-    model_name_or_path = "google/umt5-small"
-    dataset_name = "Instruction_en-vn_mix"
-    batch_size = 1
-    text_column = "prompt"
-    label_column = "target"
-    lr = 5e-4
-    num_epochs = 1
-    seed = 43
-    do_test = False
-    do_eval = True
-    gradient_checkpointing = True
-    weight_decay = 0.2
+    accelerator.print(f"{AcceleratorState()}")
+
+    ################################################################################
+    # QLoRA parameters
+    ################################################################################
+    # LoRA attention dimension
+    lora_r = training_args.lora_r
+    # Alpha parameter for LoRA scaling
+    lora_alpha = training_args.lora_alpha
+    # Dropout probability for LoRA layers
+    lora_dropout = training_args.lora_dropout
+
+    ################################################################################
+    # bitsandbytes parameters
+    ################################################################################
+    # Activate 4-bit precision base model loading
+    use_4bit = training_args.use_4bit
+    # Compute dtype for 4-bit base models
+    bnb_4bit_compute_dtype = training_args.bnb_4bit_compute_dtype
+    # Quantization type (fp4 or nf4)
+    bnb_4bit_quant_type = training_args.bnb_4bit_quant_type
+    # Activate nested quantization for 4-bit base models (double quantization)
+    use_nested_quant = training_args.use_nested_quant
+
+    model_name_or_path = training_args.model_name_or_path
+    dataset_name = training_args.dataset_name
+    train_batch_size = training_args.train_batch_size
+    eval_batch_size = training_args.eval_batch_size
+    text_column = training_args.text_column
+    label_column = training_args.label_column
+    lr = training_args.lr
+    num_epochs = training_args.num_epochs
+    seed = training_args.seed
+    do_test = training_args.do_test
+    do_eval = training_args.do_eval
+    gradient_checkpointing = training_args.gradient_checkpointing
+    weight_decay = training_args.weight_decay
+    target_modules = training_args.target_modules
     set_seed(seed)
 
     dataloader_args = {
         "model_name": model_name_or_path,
-        "text_column": "prompt",
-        "target_column": "target",
-        "train_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json",
-                       r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json"],
-        "val_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k.json",
-                     r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k_translated.json"],
-        "test_file": [r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json",
-                      r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json"],
-        "batch_size": batch_size,
+        "text_column": text_column,
+        "target_column": label_column,
+        "train_file": training_args.train_file,
+        "val_file": training_args.val_file,
+        "test_file": training_args.test_file,
+        "train_batch_size": train_batch_size,
+        "eval_batch_size": eval_batch_size,
         "seed": seed,
-        "max_train_samples": 10,
-        "max_eval_samples": 4,
-        "max_predict_samples": 4,
-        "config_type": AdvanceInstructSample,
-        "num_worker": 1
+        "max_train_samples": training_args.max_train_samples,
+        "max_eval_samples": training_args.max_eval_samples,
+        "max_predict_samples": training_args.max_predict_samples,
+        "config_type": AdvanceInstructSample
     }
 
+    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
+
+    # Check GPU compatibility with bfloat16
+    if compute_dtype == torch.float16 and use_4bit:
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 8:
+            print("=" * 80)
+            print("Your GPU supports bfloat16: accelerate training with bf16=True")
+            print("=" * 80)
+
     double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_type=torch.bfloat16,
-        bnb_4bit_quant_type='nf4'
+        load_in_4bit=use_4bit,
+        bnb_4bit_use_double_quant=use_nested_quant,
+        bnb_4bit_compute_type=compute_dtype,
+        bnb_4bit_quant_type=bnb_4bit_quant_type
     )
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_2_SEQ_LM,
         inference_mode=False,
-        r=8, lora_alpha=32,
-        lora_dropout=0.1,
-        target_modules=['q', 'k', 'v', 'o', 'wi_1', 'wo', 'wi_0'],
+        r=lora_r, lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
         bias="lora_only"
     )
     generation_config = GenerationConfig.from_pretrained(
-        model_name_or_path, top_k=1, foo=False, do_sample=False, return_unused_kwargs=False,
-        no_repeat_ngram_size=3, num_beams=1, early_stopping=True, max_new_tokens=256
+        model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
+        no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=100,
+        penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0, encoder_repetition_penalty=1.8
     )
 
     # dataset = load_dataset("ought/raft", dataset_name)
@@ -194,7 +223,9 @@ def main():
     #     num_proc=1,
     # )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True, model_max_length=512)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True, model_max_length=768)
+    tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
+
     # target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
 
     # def preprocess_function(examples):
@@ -225,7 +256,7 @@ def main():
     # test_dataset = processed_datasets["test"]
 
     qa_dataloader = QADataloader(**dataloader_args)
-    qa_dataloader_instance, qa_dataset_instance = qa_dataloader.__call__()
+    qa_dataloader_instance = qa_dataloader.__call__()
 
     # def collate_fn(examples):
     #     return tokenizer.pad(examples, padding="longest", return_tensors="pt")
@@ -238,30 +269,20 @@ def main():
 
     # creating model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                  quantization_config=double_quant_config,
-                                                  torch_dtype=torch.bfloat16)
-    # for param in model.parameters():
-    #     param.requires_grad = False  # freeze the model - train adapters later
-        # if param.ndim == 1:
-        #     # cast the small parameters (e.g. layernorm) to fp32 for stability
-        #     param.data = param.data.to(torch.bfloat16)
+                                                  quantization_config=double_quant_config if use_4bit else None,
+                                                  # load_in_8bit=True
+                                                  )
+    if use_4bit:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
 
-    # model.gradient_checkpointing_enable()  # reduce number of stored activations
-    # if gradient_checkpointing:
-    #     if hasattr(model, "enable_input_require_grads"):
-    #         model.enable_input_require_grads()
-    #     else:
-    #         def make_inputs_require_grad(module, input, output):
-    #             output.requires_grad_(True)
-    #         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    model.config.use_cache = False
 
-    # class CastOutputToFloat(nn.Sequential):
-    #     def forward(self, x): return super().forward(x).to(torch.bfloat16)
-    #
-    # model.lm_head = CastOutputToFloat(model.lm_head)
+    # Print out the model keys
+    layer_names = model.state_dict().keys()
+    for name in layer_names:
+        print(name)
 
-    print(model)
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+    # model = torch.compile(model, mode="max-autotune")
     model = get_peft_model(model, peft_config, adapter_name=dataset_name)
     model.print_trainable_parameters()
 
@@ -279,11 +300,11 @@ def main():
         },
     ]
 
-    optimizer = bnb.optim.Adam8bit(
+    optimizer = bnb.optim.PagedLion8bit(
         optimizer_grouped_parameters,
         lr=lr,
     )
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    # optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
 
     # lr scheduler
     lr_scheduler = get_linear_schedule_with_warmup(
@@ -312,17 +333,17 @@ def main():
         with TorchTracemalloc() as tracemalloc:
             model.train()
             total_loss = 0
-            for step, batch in enumerate(tqdm(train_dataloader)):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Training progress epoch {epoch}")):
                 with accelerator.accumulate(model):
                     outputs = model(**batch)
-                    del batch
                     loss = outputs.loss
                     total_loss += loss.detach().float()
                     accelerator.backward(loss)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                    print(loss.item())
+                    if step % 20 == 0:
+                        print(total_loss/step)
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
         accelerator.print("GPU Memory consumed at the end of the train (end-begin): {}".format(tracemalloc.used))
@@ -350,7 +371,7 @@ def main():
             eval_preds = []
             with TorchTracemalloc() as tracemalloc:
                 # merged_model = merge_adapter(model_name_or_path, accelerator.unwrap_model(model))
-                for idx, batch in enumerate(tqdm(eval_dataloader)):
+                for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
                     # Pass dummy batch to avoid caffe error
                     if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                         model(**batch)
@@ -385,17 +406,29 @@ def main():
             correct = 0
             total = 0
             assert len(eval_preds) == len(
-                qa_dataset_instance["eval"]
-            ), f"{len(eval_preds)} != {len(qa_dataset_instance['eval'])}"
-            for pred, true in zip(eval_preds, qa_dataset_instance["eval"]):
+                qa_dataloader.dataset['eval']
+            ), f"{len(eval_preds)} != {len(qa_dataloader.dataset['eval'])}"
+            for pred, true in zip(eval_preds, qa_dataloader.dataset['eval']):
                 if pred.strip() == true[label_column].strip():
                     correct += 1
                 total += 1
             accuracy = correct / total * 100
             accelerator.print(f"{accuracy=}")
-            accelerator.print(f"{eval_preds[:10]=}")
-            accelerator.print(f"{[example[label_column] for idx, example in enumerate(qa_dataset_instance['eval'])]=}")
+            with open(f"src/models/runs/log_dir_e{epoch}.txt", "w") as log_file:
+                # Log info
+                log_file.write(f"{epoch=}: {train_ppl=} {train_epoch_loss=}\n")
+                log_file.write(f"Accuracy: {accuracy}\n")
+                for i in range(0, 10):
+                    idx = random.randint(0, len(eval_preds)-1)
+                    accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                    accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
+                    accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
+                    log_file.write("===================================================================")
+                    log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                    log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
+                    log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                    log_file.write("===================================================================")
     if do_test:
         model.eval()
         test_preds = []
@@ -426,6 +459,8 @@ def main():
         pred_df.to_csv(f"data/{dataset_name}/predictions.csv", index=False)
 
     accelerator.wait_for_everyone()
+    model = model.reverse_bettertransformer()
+    model.save_pretrained("fine_tuned_model")
     model.push_to_hub(
         "1TuanPham/"
         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
@@ -436,4 +471,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    train()

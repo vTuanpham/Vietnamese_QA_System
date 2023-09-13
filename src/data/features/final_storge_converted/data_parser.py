@@ -5,6 +5,7 @@ import re
 import sys
 import string
 import multiprocessing
+import warnings
 
 sys.path.insert(0, r'./')
 try:
@@ -50,6 +51,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
         assert os.path.isdir(self.output_dir), "Please provide the correct output directory"
 
         self.parser_type = parser_type
+        self.target_config = target_config
 
         self.do_translate = do_translate
         self.do_ctx_augmentation = do_ctx_augmentation
@@ -60,7 +62,6 @@ class DataParser(metaclass=ForceBaseCallMeta):
 
         if self.do_translate:
             self.target_fields = target_fields
-            self.target_config = target_config
 
             assert max_example_per_thread < large_chunks_threshold, " Large chunks threshold can't be smaller than max_example per thread!"
             self.max_example_per_thread = max_example_per_thread
@@ -316,8 +317,9 @@ class DataParser(metaclass=ForceBaseCallMeta):
             validated_data = []
             for idx, data in enumerate(tqdm(self.converted_data, desc="Writing data to file")):
                 if self.validate(self.converted_data[idx].keys(), self.target_config):
-                    validated_data.append(data)
-            json.dump(validated_data, jfile, ensure_ascii=False, indent=4)
+                    # validated_data.append(data)
+                    jfile.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
+            # json.dump(validated_data, jfile, ensure_ascii=False, indent=4)
             print(f"\n Total line printed: {idx + 1}")
 
         if IN_COLAB:
@@ -332,8 +334,9 @@ class DataParser(metaclass=ForceBaseCallMeta):
                 print(f"\n Saving {self.parser_type} translated to {output_translated_path}... ")
                 translated_data = []
                 for idx, data in enumerate(tqdm(self.converted_data_translated, desc="Writing translated data to file")):
-                    translated_data.append(data)
-                json.dump(translated_data, jfile, ensure_ascii=False, indent=4)
+                    # translated_data.append(data)
+                    jfile.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
+                # json.dump(translated_data, jfile, ensure_ascii=False, indent=4)
                 print(f"\n Total line printed: {idx + 1}")
 
             if IN_COLAB:
