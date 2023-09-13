@@ -9,6 +9,8 @@ def parse_arguments():
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
     parser.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")
     parser.add_argument("--lora_dropout", type=float, default=0.04, help="Dropout probability for LoRA layers")
+    parser.add_argument("--target_modules", nargs='+', type=str,  default=['q', 'k', 'v'],
+                        help="The target modules for lora")
 
     parser.add_argument("--use_4bit", type=bool, default=True, help="Activate 4-bit precision base model loading")
     parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16",

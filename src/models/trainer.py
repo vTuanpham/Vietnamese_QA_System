@@ -6,10 +6,11 @@ import warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import sys
 sys.path.insert(0,r'./')
+import psutil
 import threading
 
 import numpy as np
-import psutil
+
 import torch
 try:
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -17,6 +18,7 @@ try:
 except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import torch.nn as nn
+
 from accelerate import Accelerator
 from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import DistributedType
@@ -33,6 +35,7 @@ from transformers import \
      BitsAndBytesConfig,
      GenerationConfig)
 from transformers.trainer_pt_utils import get_parameter_names
+from optimum.bettertransformer import BetterTransformer
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
@@ -163,6 +166,7 @@ def train(training_args):
     do_eval = training_args.do_eval
     gradient_checkpointing = training_args.gradient_checkpointing
     weight_decay = training_args.weight_decay
+    target_modules = training_args.target_modules
     set_seed(seed)
 
     dataloader_args = {
@@ -202,7 +206,7 @@ def train(training_args):
         inference_mode=False,
         r=lora_r, lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
-        target_modules=['q', 'k', 'v'],
+        target_modules=target_modules,
         bias="lora_only"
     )
     generation_config = GenerationConfig.from_pretrained(
@@ -455,6 +459,8 @@ def train(training_args):
         pred_df.to_csv(f"data/{dataset_name}/predictions.csv", index=False)
 
     accelerator.wait_for_everyone()
+    model = model.reverse_bettertransformer()
+    model.save_pretrained("fine_tuned_model")
     model.push_to_hub(
         "1TuanPham/"
         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
