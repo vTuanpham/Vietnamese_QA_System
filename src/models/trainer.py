@@ -124,65 +124,60 @@ class TorchTracemalloc:
         self.cpu_used = b2mb(self.cpu_end - self.cpu_begin)
         self.cpu_peaked = b2mb(self.cpu_peak - self.cpu_begin)
 
-def main():
-    accelerator = Accelerator(gradient_accumulation_steps=8)
+def train(training_args):
+    accelerator = Accelerator()
     accelerator.print(f"{AcceleratorState()}")
 
     ################################################################################
     # QLoRA parameters
     ################################################################################
     # LoRA attention dimension
-    lora_r = 4
+    lora_r = training_args.lora_r
     # Alpha parameter for LoRA scaling
-    lora_alpha = 64
+    lora_alpha = training_args.lora_alpha
     # Dropout probability for LoRA layers
-    lora_dropout = 0.03
+    lora_dropout = training_args.lora_dropout
 
     ################################################################################
     # bitsandbytes parameters
     ################################################################################
     # Activate 4-bit precision base model loading
-    use_4bit = True
+    use_4bit = training_args.use_4bit
     # Compute dtype for 4-bit base models
-    bnb_4bit_compute_dtype = "bfloat16"
+    bnb_4bit_compute_dtype = training_args.bnb_4bit_compute_dtype
     # Quantization type (fp4 or nf4)
-    bnb_4bit_quant_type = "nf4"
+    bnb_4bit_quant_type = training_args.bnb_4bit_quant_type
     # Activate nested quantization for 4-bit base models (double quantization)
-    use_nested_quant = True
+    use_nested_quant = training_args.use_nested_quant
 
-    model_name_or_path = "google/flan-t5-base"
-    dataset_name = "Instruction_en-vn_mix"
-    train_batch_size = 4
-    eval_batch_size = 6
-    text_column = "prompt"
-    label_column = "target"
-    lr = 5e-5
-    num_epochs = 5
-    seed = 43
-    do_test = False
-    do_eval = True
-    gradient_checkpointing = True
-    weight_decay = 0.2
+    model_name_or_path = training_args.model_name_or_path
+    dataset_name = training_args.dataset_name
+    train_batch_size = training_args.train_batch_size
+    eval_batch_size = training_args.eval_batch_size
+    text_column = training_args.text_column
+    label_column = training_args.label_column
+    lr = training_args.lr
+    num_epochs = training_args.num_epochs
+    seed = training_args.seed
+    do_test = training_args.do_test
+    do_eval = training_args.do_eval
+    gradient_checkpointing = training_args.gradient_checkpointing
+    weight_decay = training_args.weight_decay
     set_seed(seed)
 
     dataloader_args = {
         "model_name": model_name_or_path,
-        "text_column": "prompt",
-        "target_column": "target",
-        "train_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
-                       r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
-                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
-                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"],
-        "val_file": [r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70kFormated.json",
-                     r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70k_translatedFormated.json"],
-        "test_file": [r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json",
-                      r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json"],
+        "text_column": text_column,
+        "target_column": label_column,
+        "train_file": training_args.train_file,
+        "val_file": training_args.val_file,
+        "test_file": training_args.test_file,
         "train_batch_size": train_batch_size,
         "eval_batch_size": eval_batch_size,
         "seed": seed,
-        "max_train_samples": 30,
-        "max_eval_samples": 20,
-        "max_predict_samples": 20,
+        "max_train_samples": training_args.max_train_samples,
+        "max_eval_samples": training_args.max_eval_samples,
+        "max_predict_samples": training_args.max_predict_samples,
         "config_type": AdvanceInstructSample
     }
 
@@ -212,7 +207,7 @@ def main():
     )
     generation_config = GenerationConfig.from_pretrained(
         model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-        no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=10,
+        no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=100,
         penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0, encoder_repetition_penalty=1.8
     )
 
@@ -270,9 +265,12 @@ def main():
 
     # creating model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                  quantization_config=double_quant_config,
+                                                  quantization_config=double_quant_config if use_4bit else None,
                                                   # load_in_8bit=True
                                                   )
+    if use_4bit:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+
     model.config.use_cache = False
 
     # Print out the model keys
@@ -280,7 +278,6 @@ def main():
     for name in layer_names:
         print(name)
 
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
     # model = torch.compile(model, mode="max-autotune")
     model = get_peft_model(model, peft_config, adapter_name=dataset_name)
     model.print_trainable_parameters()
@@ -332,7 +329,7 @@ def main():
         with TorchTracemalloc() as tracemalloc:
             model.train()
             total_loss = 0
-            for step, batch in enumerate(tqdm(train_dataloader)):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Training progress epoch {epoch}")):
                 with accelerator.accumulate(model):
                     outputs = model(**batch)
                     loss = outputs.loss
@@ -370,7 +367,7 @@ def main():
             eval_preds = []
             with TorchTracemalloc() as tracemalloc:
                 # merged_model = merge_adapter(model_name_or_path, accelerator.unwrap_model(model))
-                for idx, batch in enumerate(tqdm(eval_dataloader)):
+                for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
                     # Pass dummy batch to avoid caffe error
                     if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                         model(**batch)
@@ -413,12 +410,21 @@ def main():
                 total += 1
             accuracy = correct / total * 100
             accelerator.print(f"{accuracy=}")
-            for i in range(0, 10):
-                idx = random.randint(0, len(eval_preds)-1)
-                accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
-                accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+            with open(f"src/models/runs/log_dir_e{epoch}.txt", "w") as log_file:
+                # Log info
+                log_file.write(f"{epoch=}: {train_ppl=} {train_epoch_loss=}\n")
+                log_file.write(f"Accuracy: {accuracy}\n")
+                for i in range(0, 10):
+                    idx = random.randint(0, len(eval_preds)-1)
+                    accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                    accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
+                    accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
+                    log_file.write("===================================================================")
+                    log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                    log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
+                    log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                    log_file.write("===================================================================")
     if do_test:
         model.eval()
         test_preds = []
@@ -459,4 +465,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    train()
