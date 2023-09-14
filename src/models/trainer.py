@@ -285,7 +285,8 @@ def train(training_args):
                                                   load_in_8bit=use_8bit,
                                                   device_map="auto",
                                                   offload_folder="offload",
-                                                  offload_state_dict=True
+                                                  offload_state_dict=True,
+                                                  torch_dtype=compute_dtype
                                                   )
     if use_4bit or use_8bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
@@ -455,11 +456,11 @@ def train(training_args):
                         accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
                         accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
-                        log_file.write("===================================================================")
+                        log_file.write("===================================================================\n")
                         log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
                         log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
                         log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
-                        log_file.write("===================================================================")
+                        log_file.write("===================================================================\n")
                     log_file.write(f"\n     Training arguments: \n")
                     for key, value in vars(training_args).items():
                         log_file.write(f"\n {key}: {value} ")
