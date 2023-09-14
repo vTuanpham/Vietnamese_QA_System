@@ -1,3 +1,4 @@
+import datetime
 import gc
 import os
 import random
@@ -153,6 +154,8 @@ def train(training_args):
     # Activate nested quantization for 4-bit base models (double quantization)
     use_nested_quant = training_args.use_nested_quant
 
+    use_8bit = training_args.use_8bit
+
     model_name_or_path = training_args.model_name_or_path
     dataset_name = training_args.dataset_name
     train_batch_size = training_args.train_batch_size
@@ -200,7 +203,7 @@ def train(training_args):
         bnb_4bit_use_double_quant=use_nested_quant,
         bnb_4bit_compute_type=compute_dtype,
         bnb_4bit_quant_type=bnb_4bit_quant_type
-    )
+    ) if not use_8bit else None
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_2_SEQ_LM,
         inference_mode=False,
@@ -279,9 +282,12 @@ def train(training_args):
     # creating model
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
                                                   quantization_config=double_quant_config if use_4bit else None,
-                                                  # load_in_8bit=True
+                                                  load_in_8bit=use_8bit,
+                                                  device_map="auto",
+                                                  offload_folder="offload",
+                                                  offload_state_dict=True
                                                   )
-    if use_4bit:
+    if use_4bit or use_8bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
 
     model.config.use_cache = False
@@ -328,6 +334,14 @@ def train(training_args):
                       f"support for BetterTransformer, please change model type if "
                       f"you still want to use it.\n Continue running without it...")
         pass
+
+    # if training_args.enable_cpu_offload:
+    #     try:
+    #         model = model.enable_cpu_offload()
+    #     except Exception as e:
+    #         warnings.warn(f"Can't enable cpu offload for {model_name_or_path}, continue without it")
+    #         accelerator.print(f"Here is the stack trace: {e}")
+    #         pass
 
     model, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         model, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
@@ -423,21 +437,37 @@ def train(training_args):
                 total += 1
             accuracy = correct / total * 100
             accelerator.print(f"{accuracy=}")
-            with open(f"src/models/runs/log_dir_e{epoch}.txt", "w") as log_file:
-                # Log info
-                log_file.write(f"{epoch=}: {train_ppl=} {train_epoch_loss=}\n")
-                log_file.write(f"Accuracy: {accuracy}\n")
-                for i in range(0, 10):
-                    idx = random.randint(0, len(eval_preds)-1)
-                    accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                    accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
-                    accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+            cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
+            try:
+                cur_dir = os.getcwd()
+                if '/' in model_name_or_path:
+                    model_name = model_name_or_path.replace("/", "-")
+                else:
+                    model_name = model_name_or_path
+                log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
+                with open(log_path, 'w') as log_file:
+                    # Log info
+                    log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
+                    log_file.write(f"\n       Accuracy: {accuracy}\n")
+                    for i in range(0, 10):
+                        idx = random.randint(0, len(eval_preds)-1)
+                        accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                        accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
+                        accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
-                    log_file.write("===================================================================")
-                    log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                    log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
-                    log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
-                    log_file.write("===================================================================")
+                        log_file.write("===================================================================")
+                        log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                        log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
+                        log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                        log_file.write("===================================================================")
+                    log_file.write(f"\n     Training arguments: \n")
+                    for key, value in vars(training_args).items():
+                        log_file.write(f"\n {key}: {value} ")
+
+            except IOError as e:
+                warnings.warn(f"Can't save config for this run {epoch}\n"
+                              f"Error message: {e}")
+                pass
     if do_test:
         model.eval()
         test_preds = []
