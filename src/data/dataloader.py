@@ -88,7 +88,9 @@ class QADataloader:
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample
                  ) -> None:
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=use_fast_tokenizer)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name,
+                                                       use_fast=use_fast_tokenizer,
+                                                       trust_remote_code=True)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.text_column = text_column

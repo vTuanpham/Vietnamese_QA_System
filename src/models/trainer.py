@@ -235,7 +235,10 @@ def train(training_args):
     #     num_proc=1,
     # )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, use_fast=True, model_max_length=768)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
+                                              use_fast=True,
+                                              model_max_length=768,
+                                              trust_remote_code=True)
     tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
 
     # target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
@@ -286,7 +289,8 @@ def train(training_args):
                                                   device_map="auto",
                                                   offload_folder="offload",
                                                   offload_state_dict=True,
-                                                  torch_dtype=compute_dtype
+                                                  torch_dtype=compute_dtype,
+                                                  trust_remote_code=True
                                                   )
     if use_4bit or use_8bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
@@ -330,10 +334,11 @@ def train(training_args):
     )
     try:
         model = model.to_bettertransformer()
-    except NotImplementedError:
+    except Exception as e:
         warnings.warn(f"This model type {model_name_or_path} is not yet "
                       f"support for BetterTransformer, please change model type if "
                       f"you still want to use it.\n Continue running without it...")
+        warnings.warn(f"Error message: {e}")
         pass
 
     # if training_args.enable_cpu_offload:
