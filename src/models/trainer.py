@@ -209,11 +209,20 @@ def train(training_args):
         target_modules=target_modules,
         bias="lora_only"
     )
-    generation_config = GenerationConfig.from_pretrained(
-        model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-        no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=100,
-        penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0, encoder_repetition_penalty=1.8
-    )
+    try:
+        generation_config = GenerationConfig.from_pretrained(
+            model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
+            no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=100,
+            penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0, encoder_repetition_penalty=1.8
+        )
+    except Exception:
+        warnings.warn(f"The model {model_name_or_path} does not have a generation config")
+        generation_config = GenerationConfig.from_dict(config_dict={
+            "top_k": 10, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
+            "max_new_tokens": 768, "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5, "min_new_tokens": 10,
+            "temperature": 2.0, "encoder_repetition_penalty": 1.8
+        })
+    accelerator.print(f"Model generation config: {generation_config}")
 
     # dataset = load_dataset("ought/raft", dataset_name)
     # classes = [k.replace("_", " ") for k in dataset["train"].features["Label"].names]
