@@ -6,6 +6,7 @@ import pprint
 from pprint import PrettyPrinter
 from typing import List, Dict
 from dataclasses import dataclass, field, asdict, fields
+from peft import TaskType
 
 
 @dataclass
@@ -61,16 +62,24 @@ class AdvanceInstructSample:
                     targets_column: str="target",
                     system_prefix: str="System prompt:",
                     question_prefix: str="Question:",
-                    is_training: bool=True
+                    response_prefix: str="Response:",
+                    is_training: bool=True,
+                    task_type: str=None,
                     ) -> Dict:
+        assert task_type, "Please specified the task type inorder to get the example"
 
-        system_msg = system_prefix + ' ' + self.system_prompt
-        question_msg = question_prefix + ' ' + self.question_text
+        system_msg = system_prefix + ' ' + self.system_prompt + "\n"
+        question_msg = question_prefix + ' ' + self.question_text + "\n"
         prompt = system_msg + ' ' + question_msg
         label = self.orig_answer_texts
 
-        return {inputs_column: prompt,
-                targets_column: label}
+        if task_type == "SEQ_2_SEQ_LM":
+            return {inputs_column: prompt,
+                    targets_column: label}
+        elif task_type == "CAUSAL_LM":
+            return {inputs_column: prompt + ' ' + response_prefix + ' ' + label}
+        else:
+            raise f"This task type {task_type} is not support"
 
 
 if __name__ == "__main__":
@@ -100,19 +109,16 @@ if __name__ == "__main__":
     # print(AdvanceQAExample.straighten_docs(python_question_contexts))
 
     example8 = AdvanceInstructSample(qas_id="8", question_text="What do cats eat?",
-                                    doc_tokens=[],
-                                    orig_answer_texts="meat and fish", is_trivial=True)
+                                    orig_answer_texts="meat and fish", system_prompt="Hi")
 
-    print(example8)
-    print(example8.get_example(is_training=True))
-    print(example8.get_dict)
+    # print(example8)
+    print(example8.get_example(is_training=True, task_type="CAUSAL_LM"))
+    # print(example8.get_dict)
 
     example6 = AdvanceInstructSample(qas_id="6", question_text="What is the meaning of existence?",
-                                    doc_tokens=["The meaning of existence is uncertain.",
-                                                "Throughout history, philosophers and theologians have debated the purpose of life and the nature of existence."],
-                                    orig_answer_texts="Dying", is_trivial=False)
-    print(example6)
-    print(example6.get_example(is_training=True))
-    print(example6.get_dict)
-    print(example6.get_dict_str)
-    print(example6.get_keys())
+                                     orig_answer_texts="Dying", system_prompt="Hello")
+    # print(example6)
+    print(example6.get_example(is_training=True, task_type="SEQ_2_SEQ_LM"))
+    # print(example6.get_dict)
+    # print(example6.get_dict_str)
+    # print(example6.get_keys())

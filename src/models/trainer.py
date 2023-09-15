@@ -29,12 +29,14 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import \
-    (AutoModelForSeq2SeqLM,
+    (AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
      AutoTokenizer,
      get_linear_schedule_with_warmup,
      set_seed,
      BitsAndBytesConfig,
-     GenerationConfig)
+     GenerationConfig,
+     AutoConfig)
 from transformers.trainer_pt_utils import get_parameter_names
 from optimum.bettertransformer import BetterTransformer
 
@@ -128,8 +130,9 @@ class TorchTracemalloc:
         self.cpu_used = b2mb(self.cpu_end - self.cpu_begin)
         self.cpu_peaked = b2mb(self.cpu_peak - self.cpu_begin)
 
+
 def train(training_args):
-    accelerator = Accelerator()
+    accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps)
     accelerator.print(f"{AcceleratorState()}")
 
     ################################################################################
@@ -170,7 +173,13 @@ def train(training_args):
     gradient_checkpointing = training_args.gradient_checkpointing
     weight_decay = training_args.weight_decay
     target_modules = training_args.target_modules
+    task_type = training_args.model_type
+    block_size = training_args.block_size
+    better_transformer = training_args.better_transformer
     set_seed(seed)
+
+    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
+    task_type = getattr(TaskType, task_type)
 
     dataloader_args = {
         "model_name": model_name_or_path,
@@ -185,10 +194,10 @@ def train(training_args):
         "max_train_samples": training_args.max_train_samples,
         "max_eval_samples": training_args.max_eval_samples,
         "max_predict_samples": training_args.max_predict_samples,
-        "config_type": AdvanceInstructSample
+        "config_type": AdvanceInstructSample,
+        "task_type": task_type,
+        "block_size": block_size
     }
-
-    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
 
     # Check GPU compatibility with bfloat16
     if compute_dtype == torch.float16 and use_4bit:
@@ -205,7 +214,7 @@ def train(training_args):
         bnb_4bit_quant_type=bnb_4bit_quant_type
     ) if not use_8bit else None
     peft_config = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM,
+        task_type=task_type,
         inference_mode=False,
         r=lora_r, lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -215,85 +224,64 @@ def train(training_args):
     try:
         generation_config = GenerationConfig.from_pretrained(
             model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-            no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_new_tokens=768, max_time=100,
-            penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0, encoder_repetition_penalty=1.8
+            no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_time=100,
+            penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0,
+            encoder_repetition_penalty=1.8, max_length=1024
         )
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
         generation_config = GenerationConfig.from_dict(config_dict={
             "top_k": 10, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
-            "max_new_tokens": 768, "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5, "min_new_tokens": 10,
-            "temperature": 2.0, "encoder_repetition_penalty": 1.8
+            "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5, "min_new_tokens": 10,
+            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length":1024
         })
     accelerator.print(f"Model generation config: {generation_config}")
-
-    # dataset = load_dataset("ought/raft", dataset_name)
-    # classes = [k.replace("_", " ") for k in dataset["train"].features["Label"].names]
-    # dataset = dataset.map(
-    #     lambda x: {"text_label": [classes[label] for label in x["Label"]]},
-    #     batched=True,
-    #     num_proc=1,
-    # )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
                                               use_fast=True,
                                               model_max_length=768,
                                               trust_remote_code=True)
     tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
-
-    # target_max_length = max([len(tokenizer(class_label)["input_ids"]) for class_label in classes])
-
-    # def preprocess_function(examples):
-    #     inputs = examples[text_column]
-    #     targets = examples[label_column]
-    #     model_inputs = tokenizer(inputs, truncation=True)
-    #     labels = tokenizer(
-    #         targets, max_length=target_max_length, padding="max_length", truncation=True, return_tensors="pt"
-    #     )
-    #     labels = labels["input_ids"]
-    #     labels[labels == tokenizer.pad_token_id] = -100
-    #     model_inputs["labels"] = labels
-    #     return model_inputs
-
-    # with accelerator.main_process_first():
-    #     processed_datasets = dataset.map(
-    #         preprocess_function,
-    #         batched=True,
-    #         num_proc=1,
-    #         remove_columns=dataset["train"].column_names,
-    #         load_from_cache_file=True,
-    #         desc="Running tokenizer on dataset",
-    #     )
-    # accelerator.wait_for_everyone()
-
-    # train_dataset = processed_datasets["train"]
-    # eval_dataset = processed_datasets["train"]
-    # test_dataset = processed_datasets["test"]
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
 
-    # def collate_fn(examples):
-    #     return tokenizer.pad(examples, padding="longest", return_tensors="pt")
-    #
-    # train_dataloader = DataLoader(
-    #     train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=batch_size, pin_memory=True
-    # )
-    # eval_dataloader = DataLoader(eval_dataset, collate_fn=collate_fn, batch_size=batch_size, pin_memory=True)
-    # test_dataloader = DataLoader(test_dataset, collate_fn=collate_fn, batch_size=batch_size, pin_memory=True)
+    config = AutoConfig.from_pretrained(
+        model_name_or_path,
+        trust_remote_code=True,
+    )
 
     # creating model
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
+    if task_type == "CAUSAL_LM":
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                   quantization_config=double_quant_config if use_4bit else None,
                                                   load_in_8bit=use_8bit,
                                                   device_map="auto",
                                                   offload_folder="offload",
                                                   offload_state_dict=True,
                                                   torch_dtype=compute_dtype,
-                                                  trust_remote_code=True
-                                                  )
+                                                  trust_remote_code=True,
+                                                  config=config
+                                                )
+    elif task_type == "SEQ_2_SEQ_LM":
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
+                                                      quantization_config=double_quant_config if use_4bit else None,
+                                                      load_in_8bit=use_8bit,
+                                                      device_map="auto",
+                                                      offload_folder="offload",
+                                                      offload_state_dict=True,
+                                                      torch_dtype=compute_dtype,
+                                                      trust_remote_code=True,
+                                                      config=config
+                                                    )
+
+    # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+    elif gradient_checkpointing:
+        model.gradient_checkpointing_enable()
 
     model.config.use_cache = False
 
@@ -332,22 +320,15 @@ def train(training_args):
         num_warmup_steps=1,
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
-    try:
-        model = model.to_bettertransformer()
-    except Exception as e:
-        warnings.warn(f"This model type {model_name_or_path} is not yet "
-                      f"support for BetterTransformer, please change model type if "
-                      f"you still want to use it.\n Continue running without it...")
-        warnings.warn(f"Error message: {e}")
-        pass
-
-    # if training_args.enable_cpu_offload:
-    #     try:
-    #         model = model.enable_cpu_offload()
-    #     except Exception as e:
-    #         warnings.warn(f"Can't enable cpu offload for {model_name_or_path}, continue without it")
-    #         accelerator.print(f"Here is the stack trace: {e}")
-    #         pass
+    if better_transformer:
+        try:
+            model = model.to_bettertransformer()
+        except Exception as e:
+            warnings.warn(f"This model type {model_name_or_path} is not yet "
+                          f"support for BetterTransformer, please change model type if "
+                          f"you still want to use it.\n Continue running without it...")
+            warnings.warn(f"Error message: {e}")
+            pass
 
     model, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         model, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
@@ -371,8 +352,11 @@ def train(training_args):
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                    if step % 20 == 0:
-                        print(total_loss/step)
+
+                # Checks if the accelerator has performed an optimization step behind the scenes
+                if accelerator.sync_gradients:
+                    print(total_loss / step)
+
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
         accelerator.print("GPU Memory consumed at the end of the train (end-begin): {}".format(tracemalloc.used))
@@ -407,7 +391,9 @@ def train(training_args):
                     batch = {k: v for k, v in batch.items() if k != "labels"}
                     with torch.no_grad():
                         outputs = accelerator.unwrap_model(model).generate(
-                            **batch, generation_config=generation_config, synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False
+                            **batch, generation_config=generation_config,
+                            synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                            pad_token_id=tokenizer.pad_token_id
                         )  # synced_gpus=True for DS-stage 3
                     outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                     preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
@@ -504,7 +490,8 @@ def train(training_args):
         pred_df.to_csv(f"data/{dataset_name}/predictions.csv", index=False)
 
     accelerator.wait_for_everyone()
-    model = model.reverse_bettertransformer()
+    if better_transformer:
+        model = model.reverse_bettertransformer()
     model.save_pretrained("fine_tuned_model")
     model.push_to_hub(
         "1TuanPham/"

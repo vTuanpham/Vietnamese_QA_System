@@ -6,28 +6,30 @@ from src.models.trainer import train
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Your script description here.")
 
-    parser.add_argument("--model_name_or_path", type=str, default="google/umt5-small", help="Model name or path")
+    parser.add_argument("--model_name_or_path", type=str, default="google/flan-t5-small", help="Model name or path")
+    parser.add_argument("--model_type", type=str, default="SEQ_2_SEQ_LM", help="Type of model to train")
 
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
     parser.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")
     parser.add_argument("--lora_dropout", type=float, default=0.04, help="Dropout probability for LoRA layers")
-    parser.add_argument("--target_modules", nargs='+', type=str,  default=['q', 'k', 'v'],
+    parser.add_argument("--target_modules", nargs='+', type=str,  default=None,
                         help="The target modules for lora")
 
-    parser.add_argument("--use_4bit", type=bool, default=True, help="Activate 4-bit precision base model loading")
+    parser.add_argument("--use_4bit", type=bool, default=False, help="Activate 4-bit precision base model loading")
     parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16",
                         help="Compute dtype for 4-bit base models")
     parser.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", help="Quantization type (fp4 or nf4)")
     parser.add_argument("--use_nested_quant", type=bool, default=True,
                         help="Activate nested quantization for 4-bit base models (double quantization)")
-
     parser.add_argument("--use_8bit", type=bool, default=False, help="Activate 8-bit precision base model loading")
+    parser.add_argument("--better_transformer", type=bool, default=False, help="Enable flash attention")
 
     parser.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
     parser.add_argument("--eval_batch_size", type=int, default=8, help="Evaluation batch size")
     parser.add_argument("--text_column", type=str, default="prompt", help="Text column")
     parser.add_argument("--label_column", type=str, default="target", help="Label column")
+    parser.add_argument("--block_size", type=int, default=128, help="")
 
     parser.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
@@ -37,6 +39,7 @@ def parse_arguments():
     parser.add_argument("--do_eval", type=bool, default=True, help="Flag to perform evaluation")
 
     parser.add_argument("--gradient_checkpointing", type=bool, default=True, help="Use gradient checkpointing")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--enable_cpu_offload", type=bool, default=False, help="Enable cpu offload")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
@@ -65,6 +68,10 @@ def parse_arguments():
                                   help="Maximum number of prediction samples")
     dataloader_group.add_argument("--config_type", type=str, default="AdvanceInstructSample", help="Configuration type")
     args = parser.parse_args()
+
+    # Sanity check
+    if args.use_8bit and args.use_4bit:
+        raise "Can't use 8bit and 4bit quantization at the same time"
 
     return args
 
