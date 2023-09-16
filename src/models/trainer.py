@@ -179,6 +179,7 @@ def train(training_args):
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
     optim_name = training_args.Optim_name
+    model_dtype = training_args.model_dtype
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -279,7 +280,7 @@ def train(training_args):
     if task_type == "CAUSAL_LM":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                       quantization_config=quant_config,
-                                                      torch_dtype=compute_dtype,
+                                                      torch_dtype=model_dtype,
                                                       trust_remote_code=True,
                                                       config=config,
                                                       **offload_config
@@ -287,7 +288,7 @@ def train(training_args):
     elif task_type == "SEQ_2_SEQ_LM":
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
                                                       quantization_config=quant_config,
-                                                      torch_dtype=compute_dtype,
+                                                      torch_dtype=model_dtype,
                                                       trust_remote_code=True,
                                                       config=config,
                                                       **offload_config
