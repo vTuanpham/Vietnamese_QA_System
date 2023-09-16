@@ -18,6 +18,7 @@ from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
+from datasets import Dataset as hfDataset
 from transformers import AutoTokenizer
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
@@ -201,7 +202,7 @@ class QADataloader:
         for index in random.sample(range(len(dataset)), 3):
             print(f"Sample {index} of the training set: {dataset[index]}.")
 
-        return dataset
+        return hfDataset.from_list(dataset)
 
     def dynamic_collate(self, batch):
         """
@@ -289,7 +290,7 @@ if __name__ == "__main__":
         "seed": 42,
         "max_train_samples": 450,
         "config_type": AdvanceInstructSample,
-        "task_type": "CASUAL_LM"
+        "task_type": "CAUSAL_LM"
     }
 
     idx = random.randint(0, 400)

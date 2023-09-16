@@ -6,7 +6,7 @@ from src.models.trainer import train
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Your script description here.")
 
-    parser.add_argument("--model_name_or_path", type=str, default="google/flan-t5-small", help="Model name or path")
+    parser.add_argument("--model_name_or_path", type=str, default="google/umt5-small", help="Model name or path")
     parser.add_argument("--model_type", type=str, default="SEQ_2_SEQ_LM", help="Type of model to train")
 
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
@@ -24,6 +24,8 @@ def parse_arguments():
     parser.add_argument("--use_8bit", type=bool, default=False, help="Activate 8-bit precision base model loading")
     parser.add_argument("--better_transformer", type=bool, default=False, help="Enable flash attention")
 
+    parser.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
+
     parser.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
     parser.add_argument("--eval_batch_size", type=int, default=8, help="Evaluation batch size")
@@ -40,7 +42,8 @@ def parse_arguments():
 
     parser.add_argument("--gradient_checkpointing", type=bool, default=True, help="Use gradient checkpointing")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--enable_cpu_offload", type=bool, default=False, help="Enable cpu offload")
+    parser.add_argument("--enable_model_offload", type=bool, default=False, help="Enable model offload")
+    parser.add_argument("--llm_int8_enable_fp32_cpu_offload", type=bool, default=False, help="")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[

@@ -176,6 +176,9 @@ def train(training_args):
     task_type = training_args.model_type
     block_size = training_args.block_size
     better_transformer = training_args.better_transformer
+    model_offload = training_args.enable_model_offload
+    llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
+    optim_name = training_args.Optim_name
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -207,12 +210,24 @@ def train(training_args):
             print("Your GPU supports bfloat16: accelerate training with bf16=True")
             print("=" * 80)
 
-    double_quant_config = BitsAndBytesConfig(
-        load_in_4bit=use_4bit,
-        bnb_4bit_use_double_quant=use_nested_quant,
-        bnb_4bit_compute_type=compute_dtype,
-        bnb_4bit_quant_type=bnb_4bit_quant_type
-    ) if not use_8bit else None
+    if use_4bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=use_4bit,
+            bnb_4bit_use_double_quant=use_nested_quant,
+            bnb_4bit_compute_type=compute_dtype,
+            bnb_4bit_quant_type=bnb_4bit_quant_type,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=10.0,
+        )
+    elif use_8bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=use_8bit,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=10.0,
+        )
+    else:
+        quant_config = None
+        warnings.warn("\n   No quantization is applied")
     peft_config = LoraConfig(
         task_type=task_type,
         inference_mode=False,
@@ -224,9 +239,9 @@ def train(training_args):
     try:
         generation_config = GenerationConfig.from_pretrained(
             model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-            no_repeat_ngram_size=2, num_beams=5, early_stopping=True, max_time=100,
-            penalty_alpha=1.2, repetition_penalty=3.5, min_new_tokens=10, temperature=2.0,
-            encoder_repetition_penalty=1.8, max_length=1024
+            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=200,
+            penalty_alpha=1.2, repetition_penalty=4.5, min_new_tokens=10, temperature=4.0,
+            encoder_repetition_penalty=2.0, max_length=1024
         )
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
@@ -253,28 +268,29 @@ def train(training_args):
         trust_remote_code=True,
     )
 
+    offload_config = {
+        "device_map": "auto",
+        "offload_folder": "offload",
+        "offload_state_dict": True,
+        "low_cpu_mem_usage": True,
+    } if model_offload else {}
+
     # creating model
     if task_type == "CAUSAL_LM":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
-                                                  quantization_config=double_quant_config if use_4bit else None,
-                                                  load_in_8bit=use_8bit,
-                                                  device_map="auto",
-                                                  offload_folder="offload",
-                                                  offload_state_dict=True,
-                                                  torch_dtype=compute_dtype,
-                                                  trust_remote_code=True,
-                                                  config=config
+                                                      quantization_config=quant_config,
+                                                      torch_dtype=compute_dtype,
+                                                      trust_remote_code=True,
+                                                      config=config,
+                                                      **offload_config
                                                 )
     elif task_type == "SEQ_2_SEQ_LM":
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                      quantization_config=double_quant_config if use_4bit else None,
-                                                      load_in_8bit=use_8bit,
-                                                      device_map="auto",
-                                                      offload_folder="offload",
-                                                      offload_state_dict=True,
+                                                      quantization_config=quant_config,
                                                       torch_dtype=compute_dtype,
                                                       trust_remote_code=True,
-                                                      config=config
+                                                      config=config,
+                                                      **offload_config
                                                     )
 
     # Please enable gradient_checkpointing at all cost, this will save your life
@@ -282,6 +298,8 @@ def train(training_args):
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
     elif gradient_checkpointing:
         model.gradient_checkpointing_enable()
+    else:
+        warnings.warn("You disable gradient checkpoint, this will result in vram consumtion")
 
     model.config.use_cache = False
 
@@ -308,11 +326,10 @@ def train(training_args):
         },
     ]
 
-    optimizer = bnb.optim.PagedLion8bit(
-        optimizer_grouped_parameters,
-        lr=lr,
-    )
-    # optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+    # bnb.optim.PagedAdamW8bit
+    optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters,
+                                               lr=lr)
+    accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
 
     # lr scheduler
     lr_scheduler = get_linear_schedule_with_warmup(
@@ -355,7 +372,7 @@ def train(training_args):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    print(total_loss / step)
+                    accelerator.print(total_loss / step)
 
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
