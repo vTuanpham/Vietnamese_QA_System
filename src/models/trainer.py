@@ -1,5 +1,6 @@
 import datetime
 import gc
+import math
 import os
 import random
 import warnings
@@ -180,10 +181,13 @@ def train(training_args):
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
     optim_name = training_args.Optim_name
     model_dtype = training_args.model_dtype
+    perplexity_eval = training_args.do_perplexity_eval
+    casual_eval = training_args.do_casual_eval
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
-    model_dtype = getattr(torch, model_dtype)
+    if model_dtype != "auto":
+        model_dtype = getattr(torch, model_dtype)
     task_type = getattr(TaskType, task_type)
 
     dataloader_args = {
@@ -242,23 +246,24 @@ def train(training_args):
         generation_config = GenerationConfig.from_pretrained(
             model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
             no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=200,
-            penalty_alpha=1.2, repetition_penalty=4.5, min_new_tokens=10, temperature=4.0,
-            encoder_repetition_penalty=2.0, max_length=1024
+            penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0,
+            encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=256,
         )
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
         generation_config = GenerationConfig.from_dict(config_dict={
             "top_k": 10, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
-            "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5, "min_new_tokens": 10,
-            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length":1024
+            "max_time": 200, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
+            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length": 256
         })
     accelerator.print(f"Model generation config: {generation_config}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
                                               use_fast=True,
-                                              model_max_length=768,
-                                              trust_remote_code=True)
-    tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
+                                              model_max_length=1024,
+                                              trust_remote_code=True,
+                                              truncation=True,
+                                              padding_size="left" if task_type == "CAUSAL_LM" else "right")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -297,7 +302,8 @@ def train(training_args):
 
     # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit:
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+        model = prepare_model_for_kbit_training(model,
+                                                use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
     elif gradient_checkpointing:
         model.gradient_checkpointing_enable()
     else:
@@ -347,6 +353,7 @@ def train(training_args):
                           f"support for BetterTransformer, please change model type if "
                           f"you still want to use it.\n Continue running without it...")
             warnings.warn(f"Error message: {e}")
+            better_transformer = False
             pass
 
     model, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
@@ -402,7 +409,6 @@ def train(training_args):
             model.eval()
             eval_preds = []
             with TorchTracemalloc() as tracemalloc:
-                # merged_model = merge_adapter(model_name_or_path, accelerator.unwrap_model(model))
                 for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
                     # Pass dummy batch to avoid caffe error
                     if idx == 0 and accelerator.distributed_type != DistributedType.NO:
@@ -436,49 +442,121 @@ def train(training_args):
                     tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
                 )
             )
+            if task_type == "SEQ_2_SEQ_LM":
+                correct = 0
+                total = 0
+                assert len(eval_preds) == len(
+                    qa_dataloader.dataset['eval']
+                ), f"{len(eval_preds)} != {len(qa_dataloader.dataset['eval'])}"
+                for pred, true in zip(eval_preds, qa_dataloader.dataset['eval']):
+                    if pred.strip() == true[label_column].strip():
+                        correct += 1
+                    total += 1
+                accuracy = correct / total * 100
+                accelerator.print(f"{accuracy=}")
+                cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
+                try:
+                    cur_dir = os.getcwd()
+                    if '/' in model_name_or_path:
+                        model_name = model_name_or_path.replace("/", "-")
+                    else:
+                        model_name = model_name_or_path
+                    log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
+                    with open(log_path, 'w') as log_file:
+                        # Log info
+                        log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
+                        log_file.write(f"\n       Accuracy: {accuracy}\n")
+                        for i in range(0, 10):
+                            idx = random.randint(0, len(eval_preds)-1)
+                            accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                            accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
+                            accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
-            correct = 0
-            total = 0
-            assert len(eval_preds) == len(
-                qa_dataloader.dataset['eval']
-            ), f"{len(eval_preds)} != {len(qa_dataloader.dataset['eval'])}"
-            for pred, true in zip(eval_preds, qa_dataloader.dataset['eval']):
-                if pred.strip() == true[label_column].strip():
-                    correct += 1
-                total += 1
-            accuracy = correct / total * 100
-            accelerator.print(f"{accuracy=}")
-            cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
-            try:
-                cur_dir = os.getcwd()
-                if '/' in model_name_or_path:
-                    model_name = model_name_or_path.replace("/", "-")
-                else:
-                    model_name = model_name_or_path
-                log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
-                with open(log_path, 'w') as log_file:
-                    # Log info
-                    log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
-                    log_file.write(f"\n       Accuracy: {accuracy}\n")
-                    for i in range(0, 10):
-                        idx = random.randint(0, len(eval_preds)-1)
-                        accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                        accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
-                        accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                            log_file.write("===================================================================\n")
+                            log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                            log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
+                            log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                            log_file.write("===================================================================\n")
+                        log_file.write(f"\n     Training arguments: \n")
+                        for key, value in vars(training_args).items():
+                            log_file.write(f"\n {key}: {value} ")
 
-                        log_file.write("===================================================================\n")
-                        log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                        log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
-                        log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
-                        log_file.write("===================================================================\n")
-                    log_file.write(f"\n     Training arguments: \n")
-                    for key, value in vars(training_args).items():
-                        log_file.write(f"\n {key}: {value} ")
+                except IOError as e:
+                    warnings.warn(f"Can't save config for this run {epoch}\n"
+                                  f"Error message: {e}")
+                    pass
 
-            except IOError as e:
-                warnings.warn(f"Can't save config for this run {epoch}\n"
-                              f"Error message: {e}")
-                pass
+            elif task_type == "CAUSAL_LM":
+                perplexity = 0
+                if perplexity_eval:
+                    model.eval()
+                    losses = []
+                    for step, batch in enumerate(eval_dataloader):
+                        with torch.no_grad():
+                            outputs = model(**batch)
+
+                        loss = outputs.loss
+                        losses.append(accelerator.gather_for_metrics(loss.repeat(qa_dataloader.eval_batch_size)))
+
+                    losses = torch.cat(losses)
+                    try:
+                        eval_loss = torch.mean(losses)
+                        perplexity = math.exp(eval_loss)
+                    except OverflowError:
+                        perplexity = float("inf")
+
+                    accelerator.print(f"epoch {epoch}: perplexity: {perplexity} eval_loss: {eval_loss}")
+
+                if casual_eval:
+                    eval_preds = []
+                    with TorchTracemalloc() as tracemalloc:
+                        for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
+                            # Pass dummy batch to avoid caffe error
+                            if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                model(**batch)
+                            batch = {k: v for k, v in batch.items() if k != "labels"}
+                            with torch.no_grad():
+                                outputs = accelerator.unwrap_model(model).generate(
+                                    **batch, generation_config=generation_config,
+                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                    pad_token_id=tokenizer.pad_token_id
+                                )  # synced_gpus=True for DS-stage 3
+                            outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                            preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                            eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+
+                    cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
+                    try:
+                        cur_dir = os.getcwd()
+                        if '/' in model_name_or_path:
+                            model_name = model_name_or_path.replace("/", "-")
+                        else:
+                            model_name = model_name_or_path
+                        log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
+                        with open(log_path, 'w') as log_file:
+                            # Log info
+                            log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
+                            log_file.write(f"\n       Perplexity: {perplexity}\n")
+                            for i in range(0, 10):
+                                idx = random.randint(0, len(eval_preds)-1)
+                                accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                                accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
+                                accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+
+                                log_file.write("===================================================================\n")
+                                log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                                log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
+                                log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                                log_file.write("===================================================================\n")
+                            log_file.write(f"\n     Training arguments: \n")
+                            for key, value in vars(training_args).items():
+                                log_file.write(f"\n {key}: {value} ")
+
+                    except IOError as e:
+                        warnings.warn(f"Can't save config for this run {epoch}\n"
+                                      f"Error message: {e}")
+                        pass
+
     if do_test:
         model.eval()
         test_preds = []
@@ -511,7 +589,7 @@ def train(training_args):
     accelerator.wait_for_everyone()
     if better_transformer:
         model = model.reverse_bettertransformer()
-    model.save_pretrained("fine_tuned_model")
+    model.save_pretrained(dataset_name)
     model.push_to_hub(
         "1TuanPham/"
         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),

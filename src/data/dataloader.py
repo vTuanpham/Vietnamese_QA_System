@@ -47,7 +47,7 @@ class AdvanceQa(Dataset):
                         break
                     if get_example:
                         try:
-                            config_data = self.config_type(**data).get_example(is_training=True,
+                            config_data = self.config_type(**data).get_example(is_training=split == 'train',
                                                                                task_type=self.task_type)
                         except KeyError:
                             raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}"
@@ -98,8 +98,8 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
-                                                       max_model_length=768)
-        self.tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
+                                                       max_model_length=768,
+                                                       padding_size="left" if task_type == "CAUSAL_LM" else "right")
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -147,7 +147,7 @@ class QADataloader:
         self.dataset = {}
         if self.train_file is not None:
             print('\nLoading train datasets' + '.' * 10)
-            train_dataset = self.load_data(self.train_file, self.max_train_samples)
+            train_dataset = self.load_data(self.train_file, self.max_train_samples, split='train')
             dataloaders['train'] = self.get_dataloader(train_dataset,
                                                        shuffle_flag=True,
                                                        batch_size=self.train_batch_size)
@@ -155,14 +155,14 @@ class QADataloader:
 
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
-            eval_dataset = self.load_data(self.val_file, self.max_eval_samples)
+            eval_dataset = self.load_data(self.val_file, self.max_eval_samples, split='eval')
             dataloaders['eval'] = self.get_dataloader(eval_dataset,
                                                       batch_size=self.eval_batch_size)
             self.dataset['eval'] = eval_dataset
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
-            test_dataset = self.load_data(self.test_file, self.max_predict_samples)
+            test_dataset = self.load_data(self.test_file, self.max_predict_samples, split='test')
             dataloaders['test'] = self.get_dataloader(test_dataset,
                                                       batch_size=self.test_batch_size)
             self.dataset['test'] = test_dataset
@@ -240,11 +240,13 @@ class QADataloader:
             return {"input_ids": inp_tokens["input_ids"],
                     "attention_mask": inp_tokens["attention_mask"],
                     "labels": target_ids}
+
         elif self.task_type == "CAUSAL_LM":
             labels = inp_tokens["input_ids"].clone()
             if self.tokenizer.pad_token_id is not None:
                 labels[labels == self.tokenizer.pad_token_id] = -100
             return {"input_ids": inp_tokens["input_ids"],
+                    "attention_mask": inp_tokens["attention_mask"],
                     "labels": labels
                     }
         else:

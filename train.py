@@ -25,7 +25,7 @@ def parse_arguments():
     parser.add_argument("--use_8bit", type=bool, default=False, help="Activate 8-bit precision base model loading")
     parser.add_argument("--better_transformer", type=bool, default=False, help="Enable flash attention")
 
-    parser.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
+    parser.add_argument("--Optim_name", type=str, default="PagedLion4bit", help="Name of optimizer in bnb lib")
 
     parser.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
@@ -40,6 +40,8 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=43, help="Random seed")
     parser.add_argument("--do_test", type=bool, default=False, help="Flag to perform testing")
     parser.add_argument("--do_eval", type=bool, default=True, help="Flag to perform evaluation")
+    parser.add_argument("--do_perplexity_eval", type=bool, default=True, help="Flag to enable perplexity computation, relevant when using casual-LM")
+    parser.add_argument("--do_casual_eval", type=bool, default=True, help="Flag to enable Casual-LM inference eval")
 
     parser.add_argument("--gradient_checkpointing", type=bool, default=True, help="Use gradient checkpointing")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")

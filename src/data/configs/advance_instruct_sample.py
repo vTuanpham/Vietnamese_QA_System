@@ -77,7 +77,11 @@ class AdvanceInstructSample:
             return {inputs_column: prompt,
                     targets_column: label}
         elif task_type == "CAUSAL_LM":
-            return {inputs_column: prompt + ' ' + response_prefix + ' ' + label}
+            if is_training:
+                example_dict = {inputs_column: prompt + ' ' + response_prefix + ' ' + label}
+            else:
+                example_dict = {inputs_column: prompt + ' ' + response_prefix + ' ', targets_column: label}
+            return example_dict
         else:
             raise f"This task type {task_type} is not support"
 
