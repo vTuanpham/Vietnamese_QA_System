@@ -183,6 +183,7 @@ def train(training_args):
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
+    model_dtype = getattr(torch, model_dtype)
     task_type = getattr(TaskType, task_type)
 
     dataloader_args = {
