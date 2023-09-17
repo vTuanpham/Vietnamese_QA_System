@@ -84,10 +84,12 @@ def b2mb(x):
 
 
 def merge_lora(base_model_name: str, peft_adapter: PeftModel,
-               adapter_save_path: str, adapter_name: str,
+               adapter_save_path: str, adapter_name: str, main_process: bool,
                model_type: str="CAUSAL_LM"):
 
-    peft_adapter.save_pretrained(adapter_save_path, save_adapter=True, save_config=True)
+    peft_adapter.save_pretrained(adapter_save_path,
+                                 save_adapter=True,
+                                 is_main_process=main_process)
 
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
     if model_type == "CAUSAL_LM":
@@ -205,7 +207,7 @@ def train(training_args):
     optim_name = training_args.Optim_name
     model_dtype = training_args.model_dtype
     perplexity_eval = training_args.do_perplexity_eval
-    casual_eval = training_args.do_casual_eval
+    generate_eval = training_args.do_generate_eval
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -267,16 +269,16 @@ def train(training_args):
     )
     try:
         generation_config = GenerationConfig.from_pretrained(
-            model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=100,
+            model_name_or_path, top_k=5, do_sample=True, return_unused_kwargs=False,
+            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=5,
             penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0, truncation=True,
-            encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=256,
+            encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=128,
         )
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
         generation_config = GenerationConfig.from_dict(config_dict={
-            "top_k": 10, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
-            "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
+            "top_k": 5, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
+            "max_time": 5, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
             "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length": 256, "truncation": True
         })
     accelerator.print(f"Model generation config: {generation_config}")
@@ -326,6 +328,17 @@ def train(training_args):
                                                         )
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
 
+    if better_transformer:
+        try:
+            base_model = base_model.to_bettertransformer()
+        except Exception as e:
+            warnings.warn(f"This model type {model_name_or_path} is not yet "
+                          f"support for BetterTransformer, please change model type if "
+                          f"you still want to use it.\n Continue running without it...")
+            warnings.warn(f"Error message: {e}")
+            better_transformer = False
+            pass
+
     # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit:
         accelerator.print(f"Preparation for kbit training...")
@@ -345,6 +358,7 @@ def train(training_args):
 
     # model = torch.compile(model, mode="max-autotune")
     adapter = PeftModel(base_model, peft_config=peft_config, adapter_name=dataset_name)
+    if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     # adapter = get_peft_model(base_model, peft_config, adapter_name=dataset_name)
     adapter.print_trainable_parameters()
 
@@ -373,16 +387,6 @@ def train(training_args):
         num_warmup_steps=1,
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
-    if better_transformer:
-        try:
-            adapter = adapter.to_bettertransformer()
-        except Exception as e:
-            warnings.warn(f"This model type {model_name_or_path} is not yet "
-                          f"support for BetterTransformer, please change model type if "
-                          f"you still want to use it.\n Continue running without it...")
-            warnings.warn(f"Error message: {e}")
-            better_transformer = False
-            pass
 
     adapter, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
@@ -435,56 +439,53 @@ def train(training_args):
 
         if do_eval:
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
-            accelerator.print(f"Not using quantization, merged model for faster inference")
-            inference_model = merge_lora(model_name_or_path, adapter,
-                                         f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}", dataset_name)
+            accelerator.print(f"Merging model for faster inference...")
+            # if better_transformer:
+            #     adapter = adapter.reverse_bettertransformer()
+            inference_model = merge_lora(model_name_or_path,
+                                         peft_adapter=adapter,
+                                         adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
+                                         main_process=accelerator.is_main_process, adapter_name=dataset_name,
+                                         model_type=task_type)
             if better_transformer: inference_model.to_bettertransformer()
             inference_model.eval()
             eval_preds = []
-            with TorchTracemalloc() as tracemalloc:
-                for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
-                    # Pass dummy batch to avoid caffe error
-                    if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                        inference_model(**batch)
-                    batch = {k: v for k, v in batch.items() if k != "labels"}
-                    with torch.no_grad():
-                        try:
-                            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
-                                                                enable_mem_efficient=False):
-                                outputs = accelerator.unwrap_model(inference_model).generate(
-                                    **batch, generation_config=generation_config,
-                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                    pad_token_id=tokenizer.pad_token_id
-                                )  # synced_gpus=True for DS-stage 3
-                        except RuntimeError:
+            if generate_eval:
+                with TorchTracemalloc() as tracemalloc:
+                    for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
+                        # Pass dummy batch to avoid caffe error
+                        if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                            inference_model(**batch)
+                        batch = {k: v for k, v in batch.items() if k != "labels"}
+                        with torch.no_grad():
                             outputs = accelerator.unwrap_model(inference_model).generate(
                                 **batch, generation_config=generation_config,
                                 synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
                                 pad_token_id=tokenizer.pad_token_id
                             )  # synced_gpus=True for DS-stage 3
-                    outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                    preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                    eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                        outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                        preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
-            # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
-            accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
-            accelerator.print("GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
-            accelerator.print("GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
-            accelerator.print(
-                "GPU Total Peak Memory consumed during the eval (max): {}".format(
-                    tracemalloc.peaked + b2mb(tracemalloc.begin)
+                # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
+                accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
+                accelerator.print("GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
+                accelerator.print("GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
+                accelerator.print(
+                    "GPU Total Peak Memory consumed during the eval (max): {}".format(
+                        tracemalloc.peaked + b2mb(tracemalloc.begin)
+                    )
                 )
-            )
 
-            accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
-            accelerator.print("CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
-            accelerator.print("CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
-            accelerator.print(
-                "CPU Total Peak Memory consumed during the eval (max): {}".format(
-                    tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+                accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
+                accelerator.print("CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
+                accelerator.print("CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
+                accelerator.print(
+                    "CPU Total Peak Memory consumed during the eval (max): {}".format(
+                        tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+                    )
                 )
-            )
-            if task_type == "SEQ_2_SEQ_LM":
+            if task_type == "SEQ_2_SEQ_LM" and generate_eval:
                 correct = 0
                 total = 0
                 assert len(eval_preds) == len(
@@ -535,7 +536,7 @@ def train(training_args):
                     for step, batch in enumerate(eval_dataloader):
                         with torch.no_grad():
                             with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
-                                                                enable_mem_efficient=False):
+                                                                enable_mem_efficient=True):
                                 outputs = inference_model(**batch)
 
                         loss = outputs.loss
@@ -550,34 +551,7 @@ def train(training_args):
 
                     accelerator.print(f"epoch {epoch}: perplexity: {perplexity} eval_loss: {eval_loss}")
 
-                if casual_eval:
-                    eval_preds = []
-                    with TorchTracemalloc() as tracemalloc:
-                        use_flash_atten = True
-                        for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
-                            # Pass dummy batch to avoid caffe error
-                            if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                                inference_model(**batch)
-                            batch = {k: v for k, v in batch.items() if k != "labels"}
-                            with torch.no_grad():
-                                try:
-                                    with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
-                                                                        enable_mem_efficient=False):
-                                        outputs = accelerator.unwrap_model(inference_model).generate(
-                                            **batch, generation_config=generation_config,
-                                            synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                            pad_token_id=tokenizer.pad_token_id
-                                        )  # synced_gpus=True for DS-stage 3
-                                except RuntimeError:
-                                    outputs = accelerator.unwrap_model(inference_model).generate(
-                                        **batch, generation_config=generation_config,
-                                        synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                        pad_token_id=tokenizer.pad_token_id
-                                    )  # synced_gpus=True for DS-stage 3
-                            outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                            preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                            eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
-
+                if generate_eval:
                     try:
                         cur_dir = os.getcwd()
                         if '/' in model_name_or_path:
@@ -642,12 +616,12 @@ def train(training_args):
 
     accelerator.wait_for_everyone()
     if better_transformer:
-        model = model.reverse_bettertransformer()
-    model.save_pretrained(dataset_name)
-    model.push_to_hub(
+        adapter = adapter.reverse_bettertransformer()
+    adapter.save_pretrained(dataset_name)
+    adapter.push_to_hub(
         "1TuanPham/"
         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
-        state_dict=accelerator.get_state_dict(model),
+        state_dict=accelerator.get_state_dict(adapter),
         use_auth_token=True,
     )
     accelerator.wait_for_everyone()

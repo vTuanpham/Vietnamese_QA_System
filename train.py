@@ -16,14 +16,14 @@ def parse_arguments():
     parser.add_argument("--target_modules", nargs='+', type=str,  default=None,
                         help="The target modules for lora")
 
-    parser.add_argument("--use_4bit", type=bool, default=False, help="Activate 4-bit precision base model loading")
+    parser.add_argument("--use_4bit", action='store_true', help="Activate 4-bit precision base model loading")
     parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16",
                         help="Compute dtype for 4-bit base models")
     parser.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", help="Quantization type (fp4 or nf4)")
-    parser.add_argument("--use_nested_quant", type=bool, default=True,
+    parser.add_argument("--use_nested_quant", action='store_true',
                         help="Activate nested quantization for 4-bit base models (double quantization)")
-    parser.add_argument("--use_8bit", type=bool, default=False, help="Activate 8-bit precision base model loading")
-    parser.add_argument("--better_transformer", type=bool, default=False, help="Enable flash attention")
+    parser.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
+    parser.add_argument("--better_transformer", action='store_true', help="Enable flash attention")
 
     parser.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
 
@@ -38,15 +38,15 @@ def parse_arguments():
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of epochs")
     parser.add_argument("--seed", type=int, default=43, help="Random seed")
-    parser.add_argument("--do_test", type=bool, default=False, help="Flag to perform testing")
-    parser.add_argument("--do_eval", type=bool, default=True, help="Flag to perform evaluation")
-    parser.add_argument("--do_perplexity_eval", type=bool, default=True, help="Flag to enable perplexity computation, relevant when using casual-LM")
-    parser.add_argument("--do_casual_eval", type=bool, default=True, help="Flag to enable Casual-LM inference eval")
+    parser.add_argument("--do_test", action='store_true', help="Flag to perform testing")
+    parser.add_argument("--do_eval", action='store_true', help="Flag to perform evaluation")
+    parser.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
+    parser.add_argument("--do_generate_eval", action="store_true", help="Flag to enable model.generate eval")
 
-    parser.add_argument("--gradient_checkpointing", type=bool, default=True, help="Use gradient checkpointing")
+    parser.add_argument("--gradient_checkpointing", action='store_true', help="Use gradient checkpointing")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--enable_model_offload", type=bool, default=False, help="Enable model offload")
-    parser.add_argument("--llm_int8_enable_fp32_cpu_offload", type=bool, default=False, help="")
+    parser.add_argument("--enable_model_offload", action='store_true', help="Enable model offload")
+    parser.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[
