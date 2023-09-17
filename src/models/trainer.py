@@ -375,7 +375,7 @@ def train(training_args):
     )
     if better_transformer:
         try:
-            model = adapter.to_bettertransformer()
+            adapter = adapter.to_bettertransformer()
         except Exception as e:
             warnings.warn(f"This model type {model_name_or_path} is not yet "
                           f"support for BetterTransformer, please change model type if "
