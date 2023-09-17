@@ -99,7 +99,7 @@ class QADataloader:
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
                                                        max_model_length=768,
-                                                       padding_size="left" if task_type == "CAUSAL_LM" else "right")
+                                                       padding_side="left" if task_type == "CAUSAL_LM" else "right")
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'

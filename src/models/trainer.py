@@ -3,6 +3,7 @@ import gc
 import math
 import os
 import random
+import subprocess
 import warnings
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -26,12 +27,10 @@ from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import DistributedType
 from accelerate.state import AcceleratorState
 
-from datasets import load_dataset
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import \
     (AutoModelForCausalLM,
-    AutoModelForSeq2SeqLM,
+     AutoModelForSeq2SeqLM,
      AutoTokenizer,
      get_linear_schedule_with_warmup,
      set_seed,
@@ -39,7 +38,6 @@ from transformers import \
      GenerationConfig,
      AutoConfig)
 from transformers.trainer_pt_utils import get_parameter_names
-from optimum.bettertransformer import BetterTransformer
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
@@ -83,6 +81,31 @@ def get_closest_label(eval_pred, classes):
 # Converting Bytes to Megabytes
 def b2mb(x):
     return int(x / 2**20)
+
+
+def merge_lora(base_model_name: str, peft_adapter: PeftModel,
+               adapter_save_path: str, adapter_name: str,
+               model_type: str="CAUSAL_LM"):
+
+    peft_adapter.save_pretrained(adapter_save_path, save_adapter=True, save_config=True)
+
+    adapter_path_file = os.path.join(adapter_save_path, adapter_name)
+    if model_type == "CAUSAL_LM":
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_name).to("cuda")
+    elif model_type == "SEQ_2_SEQ_LM":
+        base_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name).to("cuda")
+    model_to_merge = PeftModel.from_pretrained(base_model,
+                                               adapter_path_file,
+                                               load_in_8bit=True,
+                                               device_map="auto",
+                                               torch_dtype=torch.bfloat16,
+                                               )
+
+    merged_model = model_to_merge.merge_and_unload(progressbar=True)
+    del base_model, peft_adapter, model_to_merge
+    gc.collect()
+
+    return merged_model
 
 
 # This context manager is used to track the peak memory usage of the process
@@ -245,16 +268,16 @@ def train(training_args):
     try:
         generation_config = GenerationConfig.from_pretrained(
             model_name_or_path, top_k=10, do_sample=True, return_unused_kwargs=False,
-            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=200,
-            penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0,
+            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=100,
+            penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0, truncation=True,
             encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=256,
         )
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
         generation_config = GenerationConfig.from_dict(config_dict={
             "top_k": 10, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
-            "max_time": 200, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
-            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length": 256
+            "max_time": 100, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
+            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length": 256, "truncation": True
         })
     accelerator.print(f"Model generation config: {generation_config}")
 
@@ -263,7 +286,7 @@ def train(training_args):
                                               model_max_length=1024,
                                               trust_remote_code=True,
                                               truncation=True,
-                                              padding_size="left" if task_type == "CAUSAL_LM" else "right")
+                                              padding_side="left" if task_type == "CAUSAL_LM" else "right")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -284,52 +307,57 @@ def train(training_args):
 
     # creating model
     if task_type == "CAUSAL_LM":
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
-                                                      quantization_config=quant_config,
-                                                      torch_dtype=model_dtype,
-                                                      trust_remote_code=True,
-                                                      config=config,
-                                                      **offload_config
-                                                )
-    elif task_type == "SEQ_2_SEQ_LM":
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                      quantization_config=quant_config,
-                                                      torch_dtype=model_dtype,
-                                                      trust_remote_code=True,
-                                                      config=config,
-                                                      **offload_config
+        base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                          quantization_config=quant_config,
+                                                          load_in_8bit=use_8bit,
+                                                          load_in_4bit=use_4bit,
+                                                          torch_dtype=model_dtype,
+                                                          config=config,
+                                                          **offload_config
                                                     )
+    elif task_type == "SEQ_2_SEQ_LM":
+        base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
+                                                          quantization_config=quant_config,
+                                                          load_in_8bit=use_8bit,
+                                                          load_in_4bit=use_4bit,
+                                                          torch_dtype=model_dtype,
+                                                          config=config,
+                                                          **offload_config
+                                                        )
+    accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
 
     # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit:
-        model = prepare_model_for_kbit_training(model,
-                                                use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
+        accelerator.print(f"Preparation for kbit training...")
+        base_model = prepare_model_for_kbit_training(base_model,
+                                                     use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
     elif gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        base_model.gradient_checkpointing_enable()
     else:
         warnings.warn("You disable gradient checkpoint, this will result in vram consumtion")
 
-    model.config.use_cache = False
+    base_model.config.use_cache = False
 
     # Print out the model keys
-    layer_names = model.state_dict().keys()
+    layer_names = base_model.state_dict().keys()
     for name in layer_names:
         print(name)
 
     # model = torch.compile(model, mode="max-autotune")
-    model = get_peft_model(model, peft_config, adapter_name=dataset_name)
-    model.print_trainable_parameters()
+    adapter = PeftModel(base_model, peft_config=peft_config, adapter_name=dataset_name)
+    # adapter = get_peft_model(base_model, peft_config, adapter_name=dataset_name)
+    adapter.print_trainable_parameters()
 
     # optimizer
-    decay_parameters = get_parameter_names(model, [nn.LayerNorm])
+    decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
     decay_parameters = [name for name in decay_parameters if "bias" not in name]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if n in decay_parameters],
+            "params": [p for n, p in adapter.named_parameters() if n in decay_parameters],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if n not in decay_parameters],
+            "params": [p for n, p in adapter.named_parameters() if n not in decay_parameters],
             "weight_decay": 0.0,
         },
     ]
@@ -347,7 +375,7 @@ def train(training_args):
     )
     if better_transformer:
         try:
-            model = model.to_bettertransformer()
+            model = adapter.to_bettertransformer()
         except Exception as e:
             warnings.warn(f"This model type {model_name_or_path} is not yet "
                           f"support for BetterTransformer, please change model type if "
@@ -356,10 +384,10 @@ def train(training_args):
             better_transformer = False
             pass
 
-    model, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        model, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
+    adapter, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
+        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
     )
-    accelerator.print(model)
+    accelerator.print(adapter)
 
     is_ds_zero_3 = False
     if getattr(accelerator.state, "deepspeed_plugin", None):
@@ -367,11 +395,11 @@ def train(training_args):
 
     for epoch in range(num_epochs):
         with TorchTracemalloc() as tracemalloc:
-            model.train()
+            adapter.train()
             total_loss = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc=f"Training progress epoch {epoch}")):
-                with accelerator.accumulate(model):
-                    outputs = model(**batch)
+                with accelerator.accumulate(adapter):
+                    outputs = adapter(**batch)
                     loss = outputs.loss
                     total_loss += loss.detach().float()
                     accelerator.backward(loss)
@@ -406,20 +434,34 @@ def train(training_args):
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=}")
 
         if do_eval:
-            model.eval()
+            cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
+            accelerator.print(f"Not using quantization, merged model for faster inference")
+            inference_model = merge_lora(model_name_or_path, adapter,
+                                         f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}", dataset_name)
+            if better_transformer: inference_model.to_bettertransformer()
+            inference_model.eval()
             eval_preds = []
             with TorchTracemalloc() as tracemalloc:
                 for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
                     # Pass dummy batch to avoid caffe error
                     if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                        model(**batch)
+                        inference_model(**batch)
                     batch = {k: v for k, v in batch.items() if k != "labels"}
                     with torch.no_grad():
-                        outputs = accelerator.unwrap_model(model).generate(
-                            **batch, generation_config=generation_config,
-                            synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                            pad_token_id=tokenizer.pad_token_id
-                        )  # synced_gpus=True for DS-stage 3
+                        try:
+                            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
+                                                                enable_mem_efficient=False):
+                                outputs = accelerator.unwrap_model(inference_model).generate(
+                                    **batch, generation_config=generation_config,
+                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                    pad_token_id=tokenizer.pad_token_id
+                                )  # synced_gpus=True for DS-stage 3
+                        except RuntimeError:
+                            outputs = accelerator.unwrap_model(inference_model).generate(
+                                **batch, generation_config=generation_config,
+                                synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                pad_token_id=tokenizer.pad_token_id
+                            )  # synced_gpus=True for DS-stage 3
                     outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                     preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
                     eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
@@ -454,7 +496,6 @@ def train(training_args):
                     total += 1
                 accuracy = correct / total * 100
                 accelerator.print(f"{accuracy=}")
-                cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
                 try:
                     cur_dir = os.getcwd()
                     if '/' in model_name_or_path:
@@ -489,11 +530,13 @@ def train(training_args):
             elif task_type == "CAUSAL_LM":
                 perplexity = 0
                 if perplexity_eval:
-                    model.eval()
+                    inference_model.eval()
                     losses = []
                     for step, batch in enumerate(eval_dataloader):
                         with torch.no_grad():
-                            outputs = model(**batch)
+                            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
+                                                                enable_mem_efficient=False):
+                                outputs = inference_model(**batch)
 
                         loss = outputs.loss
                         losses.append(accelerator.gather_for_metrics(loss.repeat(qa_dataloader.eval_batch_size)))
@@ -510,22 +553,31 @@ def train(training_args):
                 if casual_eval:
                     eval_preds = []
                     with TorchTracemalloc() as tracemalloc:
+                        use_flash_atten = True
                         for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
                             # Pass dummy batch to avoid caffe error
                             if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                                model(**batch)
+                                inference_model(**batch)
                             batch = {k: v for k, v in batch.items() if k != "labels"}
                             with torch.no_grad():
-                                outputs = accelerator.unwrap_model(model).generate(
-                                    **batch, generation_config=generation_config,
-                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                    pad_token_id=tokenizer.pad_token_id
-                                )  # synced_gpus=True for DS-stage 3
+                                try:
+                                    with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
+                                                                        enable_mem_efficient=False):
+                                        outputs = accelerator.unwrap_model(inference_model).generate(
+                                            **batch, generation_config=generation_config,
+                                            synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                            pad_token_id=tokenizer.pad_token_id
+                                        )  # synced_gpus=True for DS-stage 3
+                                except RuntimeError:
+                                    outputs = accelerator.unwrap_model(inference_model).generate(
+                                        **batch, generation_config=generation_config,
+                                        synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                        pad_token_id=tokenizer.pad_token_id
+                                    )  # synced_gpus=True for DS-stage 3
                             outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                             preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
                             eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
-                    cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
                     try:
                         cur_dir = os.getcwd()
                         if '/' in model_name_or_path:
@@ -556,6 +608,8 @@ def train(training_args):
                         warnings.warn(f"Can't save config for this run {epoch}\n"
                                       f"Error message: {e}")
                         pass
+            del inference_model
+            gc.collect()
 
     if do_test:
         model.eval()

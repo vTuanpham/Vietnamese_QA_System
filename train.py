@@ -25,7 +25,7 @@ def parse_arguments():
     parser.add_argument("--use_8bit", type=bool, default=False, help="Activate 8-bit precision base model loading")
     parser.add_argument("--better_transformer", type=bool, default=False, help="Enable flash attention")
 
-    parser.add_argument("--Optim_name", type=str, default="PagedLion4bit", help="Name of optimizer in bnb lib")
+    parser.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
 
     parser.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
     parser.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
