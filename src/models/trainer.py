@@ -113,11 +113,13 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                                            config=config,
                                                            **offload_config
                                                            )
+    base_model.config.use_cache = False
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                load_in_8bit=True,
                                                device_map="auto",
                                                torch_dtype=torch.bfloat16,
+                                               offload_folder="offload"
                                                )
 
     merged_model = model_to_merge.merge_and_unload(progressbar=True)
