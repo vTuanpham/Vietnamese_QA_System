@@ -75,6 +75,22 @@ def parse_arguments():
     dataloader_group.add_argument("--max_predict_samples", type=int, default=20,
                                   help="Maximum number of prediction samples")
     dataloader_group.add_argument("--config_type", type=str, default="AdvanceInstructSample", help="Configuration type")
+
+    generation_group = parser.add_argument_group("Generation Arguments")
+    generation_group.add_argument("--top_k", type=int, default=10, help="Top-k value (default: 10)")
+    generation_group.add_argument("--no_sample", action="store_true", help="Enable sampling (default: True)")
+    generation_group.add_argument("--no_repeat_ngram_size", type=int, default=3, help="No repeat n-gram size (default: 3)")
+    generation_group.add_argument("--num_beams", type=int, default=5, help="Number of beams (default: 5)")
+    generation_group.add_argument("--no_early_stopping", action="store_true", help="Enable early stopping (default: True)")
+    generation_group.add_argument("--max_time", type=int, default=100, help="Max time (default: 100)")
+    generation_group.add_argument("--penalty_alpha", type=float, default=1.2, help="Penalty alpha (default: 1.2)")
+    generation_group.add_argument("--repetition_penalty", type=float, default=2.5, help="Repetition penalty (default: 2.5)")
+    generation_group.add_argument("--temperature", type=float, default=1.5, help="Temperature (default: 1.5)")
+    generation_group.add_argument("--no_truncation", action="store_true", help="Enable truncation (default: True)")
+    generation_group.add_argument("--encoder_repetition_penalty", type=float, default=2.0, help="Encoder repetition penalty (default: 2.0)")
+    generation_group.add_argument("--max_length", type=int, default=1024, help="Max length (default: 1024)")
+    generation_group.add_argument("--max_new_tokens", type=int, default=128, help="Max new tokens (default: 128)")
+
     args = parser.parse_args()
 
     # Sanity check

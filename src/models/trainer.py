@@ -239,6 +239,21 @@ def train(training_args):
     generate_eval = training_args.do_generate_eval
     merge_weight_eval = training_args.merge_weight_eval
     print_model_key = training_args.print_model_key
+
+    top_k = training_args.top_k
+    no_sample = training_args.no_sample
+    no_repeat_ngram_size = training_args.no_repeat_ngram_size
+    num_beams = training_args.num_beams
+    no_early_stopping = training_args.no_early_stopping
+    max_time = training_args.max_time
+    penalty_alpha = training_args.penalty_alpha
+    repetition_penalty = training_args.repetition_penalty
+    temperature = training_args.temperature
+    no_truncation = training_args.no_truncation
+    encoder_repetition_penalty = training_args.encoder_repetition_penalty
+    max_length = training_args.max_length
+    max_new_tokens = training_args.max_new_tokens
+
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -300,18 +315,21 @@ def train(training_args):
     )
     try:
         generation_config, unused_config = GenerationConfig.from_pretrained(
-            model_name_or_path, top_k=5, do_sample=True, return_unused_kwargs=True,
-            no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=5,
-            penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0, truncation=True,
-            encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=128,
+            model_name_or_path, top_k=top_k, do_sample=not no_sample, return_unused_kwargs=True,
+            no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=not no_early_stopping,
+            max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
+            truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
+            max_new_tokens=max_new_tokens,
         )
         if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
-    except Exception:
+    except Exception as e:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
+        warnings.warn(f"Error message: {e}")
         generation_config = GenerationConfig.from_dict(config_dict={
-            "top_k": 5, "do_sample": True, "no_repeat_ngram_size": 2, "num_beams": 5, "early_stopping": True,
-            "max_time": 5, "penalty_alpha": 1.2, "repetition_penalty": 3.5,  "max_new_tokens": 128,
-            "temperature": 2.0, "encoder_repetition_penalty": 1.8, "max_length": 256, "truncation": True
+            "top_k": top_k, "do_sample": not no_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": not no_early_stopping,
+            "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
+            "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
+            "max_length": max_length, "truncation": not no_truncation
         })
     accelerator.print(f"Model generation config: {generation_config}")
 
