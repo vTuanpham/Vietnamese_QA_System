@@ -42,6 +42,7 @@ def parse_arguments():
     parser.add_argument("--do_eval", action='store_true', help="Flag to perform evaluation")
     parser.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
     parser.add_argument("--do_generate_eval", action="store_true", help="Flag to enable model.generate eval")
+    parser.add_argument("--merge_weight_eval", action='store_true', help="Flag to enable merge weight from peft for faster eval")
 
     parser.add_argument("--gradient_checkpointing", action='store_true', help="Use gradient checkpointing")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")

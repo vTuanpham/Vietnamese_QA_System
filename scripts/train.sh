@@ -17,4 +17,5 @@ accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml"
         --use_4bit \
         --do_eval \
         --do_generate_eval \
+        --merge_weight_eval \
         --llm_int8_enable_fp32_cpu_offload

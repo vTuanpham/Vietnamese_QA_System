@@ -92,10 +92,27 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                  is_main_process=main_process)
 
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
+
+    config = AutoConfig.from_pretrained(
+        base_model_name,
+        trust_remote_code=True,
+    )
+    offload_config = {
+        "device_map": "auto",
+        "offload_folder": "offload",
+        "offload_state_dict": True,
+        "low_cpu_mem_usage": True,
+    }
     if model_type == "CAUSAL_LM":
-        base_model = AutoModelForCausalLM.from_pretrained(base_model_name).to("cuda")
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_name,
+                                                          config=config,
+                                                          **offload_config
+                                                          )
     elif model_type == "SEQ_2_SEQ_LM":
-        base_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name).to("cuda")
+        base_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name,
+                                                           config=config,
+                                                           **offload_config
+                                                           )
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                load_in_8bit=True,
@@ -208,6 +225,7 @@ def train(training_args):
     model_dtype = training_args.model_dtype
     perplexity_eval = training_args.do_perplexity_eval
     generate_eval = training_args.do_generate_eval
+    merge_weight_eval = training_args.merge_weight_eval
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -439,15 +457,17 @@ def train(training_args):
 
         if do_eval:
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
-            accelerator.print(f"Merging model for faster inference...")
-            # if better_transformer:
-            #     adapter = adapter.reverse_bettertransformer()
-            inference_model = merge_lora(model_name_or_path,
-                                         peft_adapter=adapter,
-                                         adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
-                                         main_process=accelerator.is_main_process, adapter_name=dataset_name,
-                                         model_type=task_type)
-            if better_transformer: inference_model.to_bettertransformer()
+            if merge_weight_eval:
+                accelerator.print(f"Merging model for faster inference...")
+                inference_model = merge_lora(model_name_or_path,
+                                             peft_adapter=adapter,
+                                             adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
+                                             main_process=accelerator.is_main_process, adapter_name=dataset_name,
+                                             model_type=task_type)
+                if better_transformer: inference_model.to_bettertransformer()
+            else:
+                warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
+                inference_model = adapter
             inference_model.eval()
             eval_preds = []
             if generate_eval:
