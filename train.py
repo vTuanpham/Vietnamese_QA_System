@@ -9,6 +9,7 @@ def parse_arguments():
     parser.add_argument("--model_name_or_path", type=str, default="google/umt5-small", help="Model name or path")
     parser.add_argument("--model_type", type=str, default="SEQ_2_SEQ_LM", help="Type of model to train")
     parser.add_argument("--model_dtype", type=str, default="auto", help="Model torch_dtype")
+    parser.add_argument("--print_model_key", action='store_true', help="Whether to print out model structure")
 
     parser.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
     parser.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")

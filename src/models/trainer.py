@@ -85,7 +85,7 @@ def b2mb(x):
 
 def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                adapter_save_path: str, adapter_name: str, main_process: bool,
-               model_type: str="CAUSAL_LM"):
+               model_type: str="CAUSAL_LM", better_transformer: bool=False):
 
     peft_adapter.save_pretrained(adapter_save_path,
                                  save_adapter=True,
@@ -114,6 +114,16 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                                            **offload_config
                                                            )
     base_model.config.use_cache = False
+    if better_transformer:
+        try:
+            base_model = base_model.to_bettertransformer()
+        except Exception as e:
+            warnings.warn(f"This model type {base_model_name} is not yet "
+                          f"support for BetterTransformer, please change model type if "
+                          f"you still want to use it.\n Continue running without it...")
+            warnings.warn(f"Error message: {e}")
+            pass
+
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                load_in_8bit=True,
@@ -228,6 +238,7 @@ def train(training_args):
     perplexity_eval = training_args.do_perplexity_eval
     generate_eval = training_args.do_generate_eval
     merge_weight_eval = training_args.merge_weight_eval
+    print_model_key = training_args.print_model_key
     set_seed(seed)
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
@@ -288,12 +299,13 @@ def train(training_args):
         bias="lora_only"
     )
     try:
-        generation_config = GenerationConfig.from_pretrained(
-            model_name_or_path, top_k=5, do_sample=True, return_unused_kwargs=False,
+        generation_config, unused_config = GenerationConfig.from_pretrained(
+            model_name_or_path, top_k=5, do_sample=True, return_unused_kwargs=True,
             no_repeat_ngram_size=3, num_beams=5, early_stopping=True, max_time=5,
             penalty_alpha=1.2, repetition_penalty=4.5, temperature=4.0, truncation=True,
             encoder_repetition_penalty=2.0, max_length=1024, max_new_tokens=128,
         )
+        if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
     except Exception:
         warnings.warn(f"The model {model_name_or_path} does not have a generation config")
         generation_config = GenerationConfig.from_dict(config_dict={
@@ -371,16 +383,16 @@ def train(training_args):
 
     base_model.config.use_cache = False
 
-    # Print out the model keys
-    layer_names = base_model.state_dict().keys()
-    for name in layer_names:
-        print(name)
+    if print_model_key:
+        accelerator.print(base_model)
 
     # model = torch.compile(model, mode="max-autotune")
     adapter = PeftModel(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
-    # adapter = get_peft_model(base_model, peft_config, adapter_name=dataset_name)
     adapter.print_trainable_parameters()
+
+    if print_model_key:
+        accelerator.print(adapter)
 
     # optimizer
     decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
@@ -411,7 +423,6 @@ def train(training_args):
     adapter, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
     )
-    accelerator.print(adapter)
 
     is_ds_zero_3 = False
     if getattr(accelerator.state, "deepspeed_plugin", None):
@@ -465,8 +476,9 @@ def train(training_args):
                                              peft_adapter=adapter,
                                              adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                              main_process=accelerator.is_main_process, adapter_name=dataset_name,
-                                             model_type=task_type)
-                if better_transformer: inference_model.to_bettertransformer()
+                                             model_type=task_type,
+                                             better_transformer=better_transformer)
+                # if better_transformer: inference_model.to_bettertransformer()
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
                 inference_model = adapter
