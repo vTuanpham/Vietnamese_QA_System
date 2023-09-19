@@ -2,8 +2,8 @@ import gc
 import os
 import math
 import random
+import warnings
 import sys
-import copy
 sys.path.insert(0, r'./')
 
 from tqdm.auto import tqdm
@@ -16,16 +16,19 @@ from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from datasets import Dataset as hfDataset
+from transformers import AutoTokenizer, default_data_collator
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 
 
 class AdvanceQa(Dataset):
-    def __init__(self, json_file_paths: List[str], num_examples,
+    def __init__(self, json_file_paths: List[str], num_examples, task_type: str,
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
                  get_example: bool = True, split: str='train'):
         num_examples_each = math.floor(num_examples/len(json_file_paths))
+        assert task_type, "Please specified task type"
+        self.task_type = task_type
         self.full_json_data = []
         self.config_type = config_type
         self.get_example = get_example
@@ -42,7 +45,8 @@ class AdvanceQa(Dataset):
                         break
                     if get_example:
                         try:
-                            config_data = self.config_type(**data).get_example(is_training=True)
+                            config_data = self.config_type(**data).get_example(is_training=split == 'train',
+                                                                               task_type=self.task_type)
                         except KeyError:
                             raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}"
                     else:
@@ -51,14 +55,13 @@ class AdvanceQa(Dataset):
                 print(f"Finished loading from {file_name} with total loaded {len(self.full_json_data)} examples")
                 del iterable_json_data,
                 gc.collect()
-            except Exception as e:
+            except IOError as e:
                 raise f"An error occurred while reading the data: {e}"
 
     def __len__(self) -> int:
         return len(self.full_json_data)
 
     def __getitem__(self, idx):
-
         if not self.get_example:
             try:
                 config_data = self.config_type(**self.full_json_data[idx])
@@ -73,27 +76,43 @@ class QADataloader:
                  model_name: str,
                  text_column: str,
                  target_column: str,
+                 task_type: str,
                  train_file: Union[str, List[str]],
                  val_file: Optional[Union[str, List[str]]]=None,
                  test_file: Optional[Union[str, List[str]]]=None,
                  train_batch_size: int = 8,
                  eval_batch_size: int=16,
                  test_batch_size: int=16,
+                 block_size: int=128,
                  num_worker: int = 1,
                  seed: int = 42,
                  use_fast_tokenizer: bool=True,
+                 no_preprocess_data: bool=False,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample
                  ) -> None:
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=use_fast_tokenizer)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name,
+                                                       use_fast=use_fast_tokenizer,
+                                                       trust_remote_code=True,
+                                                       max_model_length=768,
+                                                       padding_side="left" if task_type == "CAUSAL_LM" else "right")
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.text_column = text_column
         self.target_column = target_column
         self.config_type = config_type
+        self.task_type= task_type
+        self.block_size = block_size
+        self.no_preprocess_data = no_preprocess_data
+        if no_preprocess_data:
+            warnings.warn(f"\n Preprocessing data disable, this may result in vram accumulation overtime"
+                          f"Please consider enable if the size of your dataset is smaller than 100k or your setup"
+                          f"have lowram\n")
         self.train_file = train_file
         self.val_file = val_file
         self.test_file = test_file
@@ -110,28 +129,49 @@ class QADataloader:
         self.max_eval_samples = max_eval_samples
         self.max_predict_samples = max_predict_samples
 
+        if self.block_size is None:
+            block_size = self.tokenizer.model_max_length
+            if block_size > 1024:
+                warnings.warn(
+                    "The chosen tokenizer supports a `model_max_length` that is longer than the default `block_size` value"
+                    " of 1024. If you would like to use a longer `block_size` up to `tokenizer.model_max_length` you can"
+                    " override this default with `--block_size xxx`."
+                )
+            block_size = 1024
+        else:
+            if self.block_size > self.tokenizer.model_max_length:
+                warnings.warn(
+                    f"The block_size passed ({self.block_size}) is larger than the maximum length for the model"
+                    f"({self.tokenizer.model_max_length}). Using block_size={self.tokenizer.model_max_length}."
+                )
+            block_size = min(self.block_size, self.tokenizer.model_max_length)
+
     def __call__(self, *args, **kwargs) -> Union[Set[DataLoader],Set]:
         dataloaders = {}
+        self.dataset = {}
         if self.train_file is not None:
             print('\nLoading train datasets' + '.' * 10)
-            train_dataset = self.load_data(self.train_file, self.max_train_samples)
-            dataloaders['train'] = self.get_dataloader(train_dataset,
+            train_dataset = self.load_data(self.train_file, self.max_train_samples, split='train')
+            dataloaders['train'] = self.get_dataloader(train_dataset if self.no_preprocess_data else self.preprocess_data(train_dataset),
                                                        shuffle_flag=True,
                                                        batch_size=self.train_batch_size)
+            self.dataset['train'] = train_dataset
 
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
-            eval_dataset = self.load_data(self.val_file, self.max_eval_samples)
-            dataloaders['eval'] = self.get_dataloader(eval_dataset,
+            eval_dataset = self.load_data(self.val_file, self.max_eval_samples, split='eval')
+            dataloaders['eval'] = self.get_dataloader(eval_dataset if self.no_preprocess_data else self.preprocess_data(eval_dataset),
                                                       batch_size=self.eval_batch_size)
+            self.dataset['eval'] = eval_dataset
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
-            test_dataset = self.load_data(self.test_file, self.max_predict_samples)
-            dataloaders['test'] = self.get_dataloader(test_dataset,
+            test_dataset = self.load_data(self.test_file, self.max_predict_samples, split='test')
+            dataloaders['test'] = self.get_dataloader(test_dataset if self.no_preprocess_data else self.preprocess_data(test_dataset),
                                                       batch_size=self.test_batch_size)
+            self.dataset['test'] = test_dataset
 
-        self.dataset = {'train': train_dataset, 'eval': eval_dataset, 'test': test_dataset}
+        gc.collect()
 
         return dataloaders
 
@@ -154,15 +194,25 @@ class QADataloader:
             dataset = AdvanceQa(json_file_paths=data_files,
                                 num_examples=num_example,
                                 config_type=self.config_type,
+                                task_type=self.task_type,
                                 split=split,
                                 get_example=get_example)
         else:
             dataset = AdvanceQa(json_file_paths=data_files,
                                 config_type=self.config_type,
+                                task_type=self.task_type,
                                 split=split,
                                 get_example=get_example)
 
-        return dataset
+        # Log a few random samples from the training set:
+        for index in random.sample(range(len(dataset)), 3):
+            print(f"Sample {index} of the training set: {dataset[index]}.")
+
+        return hfDataset.from_list(dataset) # Parse from pytorch dataset to hugging face dataset ecosystem
+
+    def preprocess_data(self, dataset):
+        tokenized_dataset = dataset.map(self.dynamic_collate, batched=True, num_proc=1)
+        return tokenized_dataset
 
     def dynamic_collate(self, batch):
         """
@@ -173,12 +223,12 @@ class QADataloader:
             batch (list): A list of examples, where each example is a dictionary with a text column and a target column.
 
         Returns:
-            dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are padded,
-            and the target IDs are masked to exclude padded values.
+            dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are
+            padded and the target IDs are masked to exclude padded values.
         """
 
-        inputs = [example[self.text_column] for example in batch]
-        targets = [example[self.target_column] for example in batch]
+        # If do preprocess data, the batch here is assumed to be the whole dataset
+        inputs = [example[self.text_column] for example in batch] if self.no_preprocess_data else batch[self.text_column]
 
         inp_tokens = self.tokenizer.batch_encode_plus(
             inputs,
@@ -186,19 +236,32 @@ class QADataloader:
             return_tensors="pt",
             truncation=True,
         )
-        tgt_tokens = self.tokenizer.batch_encode_plus(
-            targets,
-            padding=True,
-            return_tensors="pt",
-            truncation=True,
-        )
-        target_ids = tgt_tokens["input_ids"]
-        target_mask = tgt_tokens["attention_mask"].bool()
-        target_ids = target_ids.masked_fill(~target_mask, -100)
+        if self.task_type == "SEQ_2_SEQ_LM":
+            targets = [example[self.target_column] for example in batch] if self.no_preprocess_data else batch[self.target_column]
+            tgt_tokens = self.tokenizer.batch_encode_plus(
+                targets,
+                padding=True,
+                return_tensors="pt",
+                truncation=True,
+            )
+            target_ids = tgt_tokens["input_ids"]
+            target_mask = tgt_tokens["attention_mask"].bool()
+            target_ids = target_ids.masked_fill(~target_mask, -100)
 
-        return {"input_ids": inp_tokens["input_ids"],
-                "attention_mask": inp_tokens["attention_mask"],
-                "labels": target_ids}
+            return {"input_ids": inp_tokens["input_ids"],
+                    "attention_mask": inp_tokens["attention_mask"],
+                    "labels": target_ids}
+
+        elif self.task_type == "CAUSAL_LM":
+            labels = inp_tokens["input_ids"].clone()
+            if self.tokenizer.pad_token_id is not None:
+                labels[labels == self.tokenizer.pad_token_id] = -100
+            return {"input_ids": inp_tokens["input_ids"],
+                    "attention_mask": inp_tokens["attention_mask"],
+                    "labels": labels
+                    }
+        else:
+            raise f"Unsupported task type for {self.task_type}"
 
     @staticmethod
     def seed_worker(worker_id):
@@ -211,13 +274,16 @@ class QADataloader:
         :param dataset: (Dataset): dataset from which to load the data.
         :param shuffle_flag: set to ``True`` to have the data reshuffled
                 at every epoch (default: ``False``).
-        :return: a dataset
+        :batch_size: The batch size of the dataset
+        :return: a dataloder object
+
         """
         sampler = RandomSampler(data_source=dataset,
                                 generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
+        collate_function = self.dynamic_collate if self.no_preprocess_data else default_data_collator
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
-                                collate_fn=self.dynamic_collate,
+                                collate_fn=collate_function,
                                 batch_size=batch_size,
                                 drop_last=False,
                                 pin_memory=torch.cuda.is_available(),
@@ -229,28 +295,31 @@ class QADataloader:
 
 if __name__ == "__main__":
     dataloader_args = {
-        "model_name": "google/flan-t5-small",
+        "model_name": "gpt2",
         "text_column": "prompt",
         "target_column": "target",
         "train_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
-                       r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
-                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
+                       # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
+                       # r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
                        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"],
-        "batch_size": 8,
+        "train_batch_size": 8,
         "seed": 42,
         "max_train_samples": 450,
-        "config_type": AdvanceInstructSample
+        "config_type": AdvanceInstructSample,
+        "task_type": "CAUSAL_LM",
+        "do_preprocess_data": True
     }
 
     idx = random.randint(0, 400)
     qa_dataset = AdvanceQa(json_file_paths=[r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json"],
                            num_examples=400,
                            config_type=AdvanceInstructSample,
-                           get_example=False)
-    print(qa_dataset[idx])
-    print(qa_dataset[idx].get_dict)
-    print(qa_dataset[idx].get_dict_str)
-    print(qa_dataset[idx].get_example(is_training=True))
+                           get_example=False,
+                           task_type="CAUSAL_LM")
+    # print(qa_dataset[idx])
+    # print(qa_dataset[idx].get_dict)
+    # print(qa_dataset[idx].get_dict_str)
+    print(qa_dataset[idx].get_example(is_training=True, task_type="CAUSAL_LM"))
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
