@@ -4,6 +4,7 @@ import math
 import os
 import random
 import subprocess
+from copy import deepcopy
 import warnings
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -252,6 +253,7 @@ def train(training_args):
     no_truncation = training_args.no_truncation
     encoder_repetition_penalty = training_args.encoder_repetition_penalty
     max_length = training_args.max_length
+    no_preprocess_data = training_args.no_preprocess_data
     max_new_tokens = training_args.max_new_tokens
 
     set_seed(seed)
@@ -276,16 +278,17 @@ def train(training_args):
         "max_predict_samples": training_args.max_predict_samples,
         "config_type": AdvanceInstructSample,
         "task_type": task_type,
-        "block_size": block_size
+        "block_size": block_size,
+        "no_preprocess_data": no_preprocess_data,
     }
 
     # Check GPU compatibility with bfloat16
     if compute_dtype == torch.float16 and use_4bit:
         major, _ = torch.cuda.get_device_capability()
         if major >= 8:
-            print("=" * 80)
-            print("Your GPU supports bfloat16: accelerate training with bf16=True")
-            print("=" * 80)
+            accelerator.print("=" * 80)
+            accelerator.print("Your GPU supports bfloat16: accelerate training with bf16=True")
+            accelerator.print("=" * 80)
 
     if use_4bit:
         quant_config = BitsAndBytesConfig(
@@ -344,6 +347,15 @@ def train(training_args):
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
+
+    for idx, data in enumerate(iter(qa_dataloader_instance['test'])):
+        accelerator.print("\n==============================================================================\n")
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        labels = data['labels'].cpu().numpy()
+        labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
+        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        accelerator.print("\n==============================================================================\n")
+        if idx == 5: break
 
     config = AutoConfig.from_pretrained(
         model_name_or_path,

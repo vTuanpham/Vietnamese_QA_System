@@ -11,29 +11,24 @@ def parse_arguments():
     parser.add_argument("--model_dtype", type=str, default="auto", help="Model torch_dtype")
     parser.add_argument("--print_model_key", action='store_true', help="Whether to print out model structure")
 
-    parser.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
-    parser.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")
-    parser.add_argument("--lora_dropout", type=float, default=0.04, help="Dropout probability for LoRA layers")
-    parser.add_argument("--target_modules", nargs='+', type=str,  default=None,
-                        help="The target modules for lora")
+    peft_group = parser.add_argument_group("Parameters efficient arguments")
+    peft_group.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
+    peft_group.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")
+    peft_group.add_argument("--lora_dropout", type=float, default=0.04, help="Dropout probability for LoRA layers")
+    peft_group.add_argument("--target_modules", nargs='+', type=str,  default=None,
+                            help="The target modules for lora")
 
-    parser.add_argument("--use_4bit", action='store_true', help="Activate 4-bit precision base model loading")
-    parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16",
+    bitsandbytes_group = parser.add_argument_group("Bitsandbytes arguments")
+    bitsandbytes_group.add_argument("--use_4bit", action='store_true', help="Activate 4-bit precision base model loading")
+    bitsandbytes_group.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16",
                         help="Compute dtype for 4-bit base models")
-    parser.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", help="Quantization type (fp4 or nf4)")
-    parser.add_argument("--use_nested_quant", action='store_true',
+    bitsandbytes_group.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", help="Quantization type (fp4 or nf4)")
+    bitsandbytes_group.add_argument("--use_nested_quant", action='store_true',
                         help="Activate nested quantization for 4-bit base models (double quantization)")
-    parser.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
+    bitsandbytes_group.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
+
     parser.add_argument("--better_transformer", action='store_true', help="Enable flash attention")
-
     parser.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
-
-    parser.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
-    parser.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
-    parser.add_argument("--eval_batch_size", type=int, default=8, help="Evaluation batch size")
-    parser.add_argument("--text_column", type=str, default="prompt", help="Text column")
-    parser.add_argument("--label_column", type=str, default="target", help="Label column")
-    parser.add_argument("--block_size", type=int, default=128, help="")
 
     parser.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
@@ -43,14 +38,20 @@ def parse_arguments():
     parser.add_argument("--do_eval", action='store_true', help="Flag to perform evaluation")
     parser.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
     parser.add_argument("--do_generate_eval", action="store_true", help="Flag to enable model.generate eval")
-    parser.add_argument("--merge_weight_eval", action='store_true', help="Flag to enable merge weight from peft for faster eval")
 
+    parser.add_argument("--merge_weight_eval", action='store_true', help="Flag to enable merge weight from peft for faster eval")
     parser.add_argument("--gradient_checkpointing", action='store_true', help="Use gradient checkpointing")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--enable_model_offload", action='store_true', help="Enable model offload")
     parser.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
+    dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
+    dataloader_group.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
+    dataloader_group.add_argument("--eval_batch_size", type=int, default=8, help="Evaluation batch size")
+    dataloader_group.add_argument("--text_column", type=str, default="prompt", help="Text column")
+    dataloader_group.add_argument("--label_column", type=str, default="target", help="Label column")
+    dataloader_group.add_argument("--block_size", type=int, default=128, help="")
     dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[
         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
@@ -75,6 +76,8 @@ def parse_arguments():
     dataloader_group.add_argument("--max_predict_samples", type=int, default=20,
                                   help="Maximum number of prediction samples")
     dataloader_group.add_argument("--config_type", type=str, default="AdvanceInstructSample", help="Configuration type")
+    dataloader_group.add_argument("--no_preprocess_data", action="store_true", help="Whether to tokenized the data first"
+                                                                                    "turn off this flag for large dataset")
 
     generation_group = parser.add_argument_group("Generation Arguments")
     generation_group.add_argument("--top_k", type=int, default=10, help="Top-k value (default: 10)")

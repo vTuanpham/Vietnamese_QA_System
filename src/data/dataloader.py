@@ -3,9 +3,7 @@ import os
 import math
 import random
 import warnings
-from itertools import chain
 import sys
-from functools import partialmethod
 sys.path.insert(0, r'./')
 
 from tqdm.auto import tqdm
@@ -19,7 +17,7 @@ from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
 from datasets import Dataset as hfDataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, default_data_collator
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 
@@ -89,6 +87,7 @@ class QADataloader:
                  num_worker: int = 1,
                  seed: int = 42,
                  use_fast_tokenizer: bool=True,
+                 no_preprocess_data: bool=False,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -109,6 +108,11 @@ class QADataloader:
         self.config_type = config_type
         self.task_type= task_type
         self.block_size = block_size
+        self.no_preprocess_data = no_preprocess_data
+        if no_preprocess_data:
+            warnings.warn(f"\n Preprocessing data disable, this may result in vram accumulation overtime"
+                          f"Please consider enable if the size of your dataset is smaller than 100k or your setup"
+                          f"have lowram\n")
         self.train_file = train_file
         self.val_file = val_file
         self.test_file = test_file
@@ -148,7 +152,7 @@ class QADataloader:
         if self.train_file is not None:
             print('\nLoading train datasets' + '.' * 10)
             train_dataset = self.load_data(self.train_file, self.max_train_samples, split='train')
-            dataloaders['train'] = self.get_dataloader(train_dataset,
+            dataloaders['train'] = self.get_dataloader(train_dataset if self.no_preprocess_data else self.preprocess_data(train_dataset),
                                                        shuffle_flag=True,
                                                        batch_size=self.train_batch_size)
             self.dataset['train'] = train_dataset
@@ -156,16 +160,18 @@ class QADataloader:
         if self.val_file is not None:
             print('\nLoading validation datasets' + '.' * 10)
             eval_dataset = self.load_data(self.val_file, self.max_eval_samples, split='eval')
-            dataloaders['eval'] = self.get_dataloader(eval_dataset,
+            dataloaders['eval'] = self.get_dataloader(eval_dataset if self.no_preprocess_data else self.preprocess_data(eval_dataset),
                                                       batch_size=self.eval_batch_size)
             self.dataset['eval'] = eval_dataset
 
         if self.test_file is not None:
             print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file, self.max_predict_samples, split='test')
-            dataloaders['test'] = self.get_dataloader(test_dataset,
+            dataloaders['test'] = self.get_dataloader(test_dataset if self.no_preprocess_data else self.preprocess_data(test_dataset),
                                                       batch_size=self.test_batch_size)
             self.dataset['test'] = test_dataset
+
+        gc.collect()
 
         return dataloaders
 
@@ -202,7 +208,11 @@ class QADataloader:
         for index in random.sample(range(len(dataset)), 3):
             print(f"Sample {index} of the training set: {dataset[index]}.")
 
-        return hfDataset.from_list(dataset)
+        return hfDataset.from_list(dataset) # Parse from pytorch dataset to hugging face dataset ecosystem
+
+    def preprocess_data(self, dataset):
+        tokenized_dataset = dataset.map(self.dynamic_collate, batched=True, num_proc=1)
+        return tokenized_dataset
 
     def dynamic_collate(self, batch):
         """
@@ -213,11 +223,12 @@ class QADataloader:
             batch (list): A list of examples, where each example is a dictionary with a text column and a target column.
 
         Returns:
-            dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are padded,
-            and the target IDs are masked to exclude padded values.
+            dict: A dictionary with the input IDs, attention masks, and target IDs with attention masks where tokens are
+            padded and the target IDs are masked to exclude padded values.
         """
 
-        inputs = [example[self.text_column] for example in batch]
+        # If do preprocess data, the batch here is assumed to be the whole dataset
+        inputs = [example[self.text_column] for example in batch] if self.no_preprocess_data else batch[self.text_column]
 
         inp_tokens = self.tokenizer.batch_encode_plus(
             inputs,
@@ -226,7 +237,7 @@ class QADataloader:
             truncation=True,
         )
         if self.task_type == "SEQ_2_SEQ_LM":
-            targets = [example[self.target_column] for example in batch]
+            targets = [example[self.target_column] for example in batch] if self.no_preprocess_data else batch[self.target_column]
             tgt_tokens = self.tokenizer.batch_encode_plus(
                 targets,
                 padding=True,
@@ -250,7 +261,7 @@ class QADataloader:
                     "labels": labels
                     }
         else:
-            raise f"Unsupport task type for {self.task_type}"
+            raise f"Unsupported task type for {self.task_type}"
 
     @staticmethod
     def seed_worker(worker_id):
@@ -263,13 +274,16 @@ class QADataloader:
         :param dataset: (Dataset): dataset from which to load the data.
         :param shuffle_flag: set to ``True`` to have the data reshuffled
                 at every epoch (default: ``False``).
-        :return: a dataset
+        :batch_size: The batch size of the dataset
+        :return: a dataloder object
+
         """
         sampler = RandomSampler(data_source=dataset,
                                 generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
+        collate_function = self.dynamic_collate if self.no_preprocess_data else default_data_collator
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
-                                collate_fn=self.dynamic_collate,
+                                collate_fn=collate_function,
                                 batch_size=batch_size,
                                 drop_last=False,
                                 pin_memory=torch.cuda.is_available(),
@@ -292,7 +306,8 @@ if __name__ == "__main__":
         "seed": 42,
         "max_train_samples": 450,
         "config_type": AdvanceInstructSample,
-        "task_type": "CAUSAL_LM"
+        "task_type": "CAUSAL_LM",
+        "do_preprocess_data": True
     }
 
     idx = random.randint(0, 400)

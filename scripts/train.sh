@@ -1,9 +1,9 @@
-accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
         --lora_r 8 \
         --model_name_or_path distilgpt2 \
-        --max_train_samples 8000 \
+        --max_train_samples 500 \
         --max_eval_samples 20 \
-        --train_batch_size 4 \
+        --train_batch_size 2 \
         --val_file "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json" "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
         --num_epochs 4 \
         --model_type CAUSAL_LM \
