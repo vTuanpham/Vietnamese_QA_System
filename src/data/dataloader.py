@@ -17,7 +17,7 @@ from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
 from datasets import Dataset as hfDataset
-from transformers import AutoTokenizer, default_data_collator
+from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling, default_data_collator
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 
@@ -97,7 +97,7 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
-                                                       max_model_length=768,
+                                                       max_model_length=1024,
                                                        padding_side="left" if task_type == "CAUSAL_LM" else "right")
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -211,7 +211,7 @@ class QADataloader:
         return hfDataset.from_list(dataset) # Parse from pytorch dataset to hugging face dataset ecosystem
 
     def preprocess_data(self, dataset):
-        tokenized_dataset = dataset.map(self.dynamic_collate, batched=True, num_proc=1)
+        tokenized_dataset = dataset.map(self.tokenize_function, batched=True, num_proc=1)
         return tokenized_dataset
 
     def dynamic_collate(self, batch):
@@ -228,7 +228,7 @@ class QADataloader:
         """
 
         # If do preprocess data, the batch here is assumed to be the whole dataset
-        inputs = [example[self.text_column] for example in batch] if self.no_preprocess_data else batch[self.text_column]
+        inputs = [example[self.text_column] for example in batch]
 
         inp_tokens = self.tokenizer.batch_encode_plus(
             inputs,
@@ -237,12 +237,50 @@ class QADataloader:
             truncation=True,
         )
         if self.task_type == "SEQ_2_SEQ_LM":
-            targets = [example[self.target_column] for example in batch] if self.no_preprocess_data else batch[self.target_column]
+            targets = [example[self.target_column] for example in batch]
             tgt_tokens = self.tokenizer.batch_encode_plus(
                 targets,
                 padding=True,
                 return_tensors="pt",
                 truncation=True,
+            )
+            target_ids = tgt_tokens["input_ids"]
+            target_mask = tgt_tokens["attention_mask"].bool()
+            target_ids = target_ids.masked_fill(~target_mask, -100)
+
+            return {"input_ids": inp_tokens["input_ids"],
+                    "attention_mask": inp_tokens["attention_mask"],
+                    "labels": target_ids}
+
+        elif self.task_type == "CAUSAL_LM":
+            labels = inp_tokens["input_ids"].clone()
+            if self.tokenizer.pad_token_id is not None:
+                labels[labels == self.tokenizer.pad_token_id] = -100
+            return {"input_ids": inp_tokens["input_ids"],
+                    "attention_mask": inp_tokens["attention_mask"],
+                    "labels": labels
+                    }
+        else:
+            raise f"Unsupported task type for {self.task_type}"
+
+    def tokenize_function(self, data: hfDataset):
+        inputs = data[self.text_column]
+
+        inp_tokens = self.tokenizer(
+            inputs,
+            padding='max_length',
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024
+        )
+        if self.task_type == "SEQ_2_SEQ_LM":
+            targets = data[self.target_column]
+            tgt_tokens = self.tokenizer(
+                targets,
+                padding='max_length',
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024
             )
             target_ids = tgt_tokens["input_ids"]
             target_mask = tgt_tokens["attention_mask"].bool()
@@ -280,7 +318,14 @@ class QADataloader:
         """
         sampler = RandomSampler(data_source=dataset,
                                 generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
+        # if not self.no_preprocess_data:
+        #     if self.task_type == "SEQ_2_SEQ_LM":
+        #         collate_function = DataCollatorForSeq2Seq(tokenizer=self.tokenizer, return_tensors='pt')
+        #     elif self.task_type == "CAUSAL_LM":
+        #         collate_function = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, return_tensors='pt',
+        #                                                            mlm=False)
         collate_function = self.dynamic_collate if self.no_preprocess_data else default_data_collator
+
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
                                 collate_fn=collate_function,

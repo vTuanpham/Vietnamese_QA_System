@@ -348,6 +348,7 @@ def train(training_args):
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
 
+    accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
     for idx, data in enumerate(iter(qa_dataloader_instance['test'])):
         accelerator.print("\n==============================================================================\n")
         accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
