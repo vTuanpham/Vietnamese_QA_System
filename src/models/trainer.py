@@ -360,7 +360,6 @@ def train(training_args):
 
     config = AutoConfig.from_pretrained(
         model_name_or_path,
-        trust_remote_code=True,
     )
 
     offload_config = {
@@ -374,6 +373,7 @@ def train(training_args):
     if task_type == "CAUSAL_LM":
         base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                           quantization_config=quant_config,
+                                                          trust_remote_code=True,
                                                           load_in_8bit=use_8bit,
                                                           load_in_4bit=use_4bit,
                                                           torch_dtype=model_dtype,
@@ -383,6 +383,7 @@ def train(training_args):
     elif task_type == "SEQ_2_SEQ_LM":
         base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
                                                           quantization_config=quant_config,
+                                                          trust_remote_code=True,
                                                           load_in_8bit=use_8bit,
                                                           load_in_4bit=use_4bit,
                                                           torch_dtype=model_dtype,
