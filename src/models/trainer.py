@@ -114,7 +114,7 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                                               )
         else:
             base_model = poor_man_llm_load(base_model_name, model_type=model_type,
-                                           model_dtype="auto", max_shard_size=max_shard_size,
+                                           model_dtype=torch.bfloat16, max_shard_size=max_shard_size,
                                            additional_kwargs=offload_config)
     elif model_type == "SEQ_2_SEQ_LM":
         if not shard_model:
@@ -123,7 +123,7 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                                                )
         else:
             base_model = poor_man_llm_load(base_model_name, model_type=model_type,
-                                           model_dtype="auto", max_shard_size=max_shard_size,
+                                           model_dtype=torch.bfloat16, max_shard_size=max_shard_size,
                                            additional_kwargs=offload_config)
 
     if better_transformer:

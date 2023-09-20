@@ -5,9 +5,9 @@ from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM
 
 
 def poor_man_llm_load(model_name: str, model_type: str,
-                      model_dtype: str, max_shard_size: str="200MB",
+                      model_dtype, max_shard_size: str="200MB",
                       additional_kwargs: dict=None):
-    if model_dtype != "auto":
+    if model_dtype != "auto" and isinstance(model_dtype, str):
         model_dtype = getattr(torch, model_dtype)
     try:
         if model_type == "CAUSAL_LM":
