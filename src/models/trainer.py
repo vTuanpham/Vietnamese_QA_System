@@ -3,6 +3,7 @@ import gc
 import math
 import os
 import random
+import shutil
 import subprocess
 from copy import deepcopy
 import warnings
@@ -44,6 +45,7 @@ import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
 
 from src.data import QADataloader
+from src.models.model_utils import poor_man_llm_load
 from src.data.configs import AdvanceInstructSample, AdvanceQAExample
 
 
@@ -86,35 +88,44 @@ def b2mb(x):
 
 def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                adapter_save_path: str, adapter_name: str, main_process: bool,
-               model_type: str="CAUSAL_LM", better_transformer: bool=False):
+               model_type: str="CAUSAL_LM", better_transformer: bool=False,
+               shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
 
     peft_adapter.save_pretrained(adapter_save_path,
                                  save_adapter=True,
                                  is_main_process=main_process)
-
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
-    config = AutoConfig.from_pretrained(
-        base_model_name,
-        trust_remote_code=True,
-    )
     offload_config = {
         "device_map": "auto",
-        "offload_folder": "offload",
+        "offload_folder": "offload_inf",
+        "torch_dtype": torch.bfloat16,
+        "use_cache": True,
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
+        "trust_remote_code":True,
+        "max_memory": max_memory
     }
+
     if model_type == "CAUSAL_LM":
-        base_model = AutoModelForCausalLM.from_pretrained(base_model_name,
-                                                          config=config,
-                                                          **offload_config
-                                                          )
+        if not shard_model:
+            base_model = AutoModelForCausalLM.from_pretrained(base_model_name,
+                                                              **offload_config
+                                                              )
+        else:
+            base_model = poor_man_llm_load(base_model_name, model_type=model_type,
+                                           model_dtype="auto", max_shard_size=max_shard_size,
+                                           additional_kwargs=offload_config)
     elif model_type == "SEQ_2_SEQ_LM":
-        base_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name,
-                                                           config=config,
-                                                           **offload_config
-                                                           )
-    base_model.config.use_cache = False
+        if not shard_model:
+            base_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name,
+                                                               **offload_config
+                                                               )
+        else:
+            base_model = poor_man_llm_load(base_model_name, model_type=model_type,
+                                           model_dtype="auto", max_shard_size=max_shard_size,
+                                           additional_kwargs=offload_config)
+
     if better_transformer:
         try:
             base_model = base_model.to_bettertransformer()
@@ -130,7 +141,6 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
                                                load_in_8bit=True,
                                                device_map="auto",
                                                torch_dtype=torch.bfloat16,
-                                               offload_folder="offload"
                                                )
 
     merged_model = model_to_merge.merge_and_unload(progressbar=True)
@@ -191,9 +201,6 @@ def train(training_args):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps)
     accelerator.print(f"{AcceleratorState()}")
 
-    ################################################################################
-    # QLoRA parameters
-    ################################################################################
     # LoRA attention dimension
     lora_r = training_args.lora_r
     # Alpha parameter for LoRA scaling
@@ -201,9 +208,6 @@ def train(training_args):
     # Dropout probability for LoRA layers
     lora_dropout = training_args.lora_dropout
 
-    ################################################################################
-    # bitsandbytes parameters
-    ################################################################################
     # Activate 4-bit precision base model loading
     use_4bit = training_args.use_4bit
     # Compute dtype for 4-bit base models
@@ -255,6 +259,8 @@ def train(training_args):
     max_length = training_args.max_length
     no_preprocess_data = training_args.no_preprocess_data
     max_new_tokens = training_args.max_new_tokens
+    shard_model = training_args.shard_model
+    max_model_shard_size = training_args.max_model_shard_size
 
     set_seed(seed)
 
@@ -308,6 +314,7 @@ def train(training_args):
     else:
         quant_config = None
         warnings.warn("\n   No quantization is applied")
+
     peft_config = LoraConfig(
         task_type=task_type,
         inference_mode=False,
@@ -316,6 +323,7 @@ def train(training_args):
         target_modules=target_modules,
         bias="lora_only"
     )
+
     try:
         generation_config, unused_config = GenerationConfig.from_pretrained(
             model_name_or_path, top_k=top_k, do_sample=not no_sample, return_unused_kwargs=True,
@@ -338,7 +346,6 @@ def train(training_args):
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
                                               use_fast=True,
-                                              model_max_length=1024,
                                               trust_remote_code=True,
                                               truncation=True,
                                               padding_side="left" if task_type == "CAUSAL_LM" else "right")
@@ -356,40 +363,76 @@ def train(training_args):
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
         accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
         accelerator.print("\n==============================================================================\n")
-        if idx == 5: break
+        if idx == 10: break
 
-    config = AutoConfig.from_pretrained(
-        model_name_or_path,
-    )
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name_or_path,
+        )
+    except Exception:
+        warnings.warn(f"Model {model_name_or_path} does not have a config.json")
+        config = None
+
+    # System setup info
+    free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
+    max_memory = f'{int(torch.cuda.mem_get_info()[0] / 1024 ** 3) - 2}GB'
+    n_gpus = torch.cuda.device_count()
+    max_memory = {i: max_memory for i in range(n_gpus)}
+
+    accelerator.print(f"System max memory: {max_memory}\n"
+                      f"System num gpus: {n_gpus}\n"
+                      f"System free in GB: {free_in_GB}")
 
     offload_config = {
         "device_map": "auto",
         "offload_folder": "offload",
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
+        "max_memory": max_memory
     } if model_offload else {}
+
+    full_model_config = {
+        "quantization_config": quant_config,
+        "trust_remote_code": True,
+        "load_in_8bit": use_8bit,
+        "load_in_4bit": use_4bit,
+        "torch_dtype": model_dtype,
+        "config": config,
+    }
+
+    if model_offload: full_model_config = {**full_model_config, **offload_config}
 
     # creating model
     if task_type == "CAUSAL_LM":
-        base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
-                                                          quantization_config=quant_config,
-                                                          trust_remote_code=True,
-                                                          load_in_8bit=use_8bit,
-                                                          load_in_4bit=use_4bit,
-                                                          torch_dtype=model_dtype,
-                                                          config=config,
-                                                          **offload_config
-                                                    )
-    elif task_type == "SEQ_2_SEQ_LM":
-        base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                          quantization_config=quant_config,
-                                                          trust_remote_code=True,
-                                                          load_in_8bit=use_8bit,
-                                                          load_in_4bit=use_4bit,
-                                                          torch_dtype=model_dtype,
-                                                          config=config,
-                                                          **offload_config
+        if not shard_model:
+            base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
+                                                              quantization_config=quant_config,
+                                                              trust_remote_code=True,
+                                                              load_in_8bit=use_8bit,
+                                                              load_in_4bit=use_4bit,
+                                                              torch_dtype=model_dtype,
+                                                              config=config,
+                                                              **offload_config
                                                         )
+        else:
+            base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
+                                           model_dtype=model_dtype, max_shard_size=max_model_shard_size,
+                                           additional_kwargs=full_model_config)
+    elif task_type == "SEQ_2_SEQ_LM":
+        if not shard_model:
+            base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
+                                                              quantization_config=quant_config,
+                                                              trust_remote_code=True,
+                                                              load_in_8bit=use_8bit,
+                                                              load_in_4bit=use_4bit,
+                                                              torch_dtype=model_dtype,
+                                                              config=config,
+                                                              **offload_config
+                                                            )
+        else:
+            base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
+                                           model_dtype=model_dtype, max_shard_size=max_model_shard_size,
+                                           additional_kwargs=full_model_config)
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
 
     if better_transformer:
@@ -477,6 +520,7 @@ def train(training_args):
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     accelerator.print(total_loss / step)
+                    del loss, outputs, batch
 
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
@@ -509,7 +553,10 @@ def train(training_args):
                                              adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                              main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                              model_type=task_type,
-                                             better_transformer=better_transformer)
+                                             better_transformer=better_transformer,
+                                             shard_model=shard_model,
+                                             max_memory={0: "0.3GB"},
+                                             max_shard_size=max_model_shard_size)
                 # if better_transformer: inference_model.to_bettertransformer()
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
@@ -649,6 +696,8 @@ def train(training_args):
                                       f"Error message: {e}")
                         pass
             del inference_model
+            accelerator.print("Removing inference model offload_inf...")
+            shutil.rmtree('offload_inf') if os.path.exists("offload_inf") else None
             gc.collect()
 
     if do_test:

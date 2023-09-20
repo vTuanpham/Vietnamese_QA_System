@@ -10,6 +10,8 @@ def parse_arguments():
     parser.add_argument("--model_type", type=str, default="SEQ_2_SEQ_LM", help="Type of model to train")
     parser.add_argument("--model_dtype", type=str, default="auto", help="Model torch_dtype")
     parser.add_argument("--print_model_key", action='store_true', help="Whether to print out model structure")
+    parser.add_argument("--shard_model", action="store_true", help="Sharded the model weight to fit on memory")
+    parser.add_argument("--max_model_shard_size", type=str, default="1GB", help="Max size per model shard")
 
     peft_group = parser.add_argument_group("Parameters efficient arguments")
     peft_group.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
@@ -92,7 +94,7 @@ def parse_arguments():
     generation_group.add_argument("--no_truncation", action="store_true", help="Enable truncation (default: True)")
     generation_group.add_argument("--encoder_repetition_penalty", type=float, default=2.0, help="Encoder repetition penalty (default: 2.0)")
     generation_group.add_argument("--max_length", type=int, default=1024, help="Max length (default: 1024)")
-    generation_group.add_argument("--max_new_tokens", type=int, default=128, help="Max new tokens (default: 128)")
+    generation_group.add_argument("--max_new_tokens", type=int, default=None, help="Max new tokens ")
 
     args = parser.parse_args()
 

@@ -97,7 +97,8 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
-                                                       max_model_length=1024,
+                                                       max_model_length=768,
+                                                       truncation=True,
                                                        padding_side="left" if task_type == "CAUSAL_LM" else "right")
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -129,6 +130,7 @@ class QADataloader:
         self.max_eval_samples = max_eval_samples
         self.max_predict_samples = max_predict_samples
 
+        # TODO: Investigate block size string concatenation for efficient training
         if self.block_size is None:
             block_size = self.tokenizer.model_max_length
             if block_size > 1024:
@@ -175,10 +177,8 @@ class QADataloader:
 
         return dataloaders
 
-    def load_data(self, data_files: List[str],
-                  num_example: int=10000,
-                  split: str='train',
-                  get_example: bool=True) -> AdvanceQa:
+    def load_data(self, data_files: List[str], num_example: int=10000,
+                  split: str='train', get_example: bool=True) -> AdvanceQa:
         """
         Loads a dataset from a file on disk and returns it as a dictionary of Dataset objects.
 
@@ -271,7 +271,7 @@ class QADataloader:
             padding='max_length',
             return_tensors="pt",
             truncation=True,
-            max_length=1024
+            max_length=768
         )
         if self.task_type == "SEQ_2_SEQ_LM":
             targets = data[self.target_column]
@@ -280,7 +280,7 @@ class QADataloader:
                 padding='max_length',
                 return_tensors="pt",
                 truncation=True,
-                max_length=1024
+                max_length=768
             )
             target_ids = tgt_tokens["input_ids"]
             target_mask = tgt_tokens["attention_mask"].bool()
@@ -318,19 +318,13 @@ class QADataloader:
         """
         sampler = RandomSampler(data_source=dataset,
                                 generator=self.generator) if shuffle_flag else SequentialSampler(dataset)
-        # if not self.no_preprocess_data:
-        #     if self.task_type == "SEQ_2_SEQ_LM":
-        #         collate_function = DataCollatorForSeq2Seq(tokenizer=self.tokenizer, return_tensors='pt')
-        #     elif self.task_type == "CAUSAL_LM":
-        #         collate_function = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, return_tensors='pt',
-        #                                                            mlm=False)
         collate_function = self.dynamic_collate if self.no_preprocess_data else default_data_collator
 
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
                                 collate_fn=collate_function,
                                 batch_size=batch_size,
-                                drop_last=False,
+                                drop_last=True,
                                 pin_memory=torch.cuda.is_available(),
                                 worker_init_fn=self.seed_worker,
                                 )
