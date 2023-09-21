@@ -22,6 +22,7 @@ try:
     torch.backends.cudnn.allow_tf32 = True
 except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
+import deepspeed
 import torch.nn as nn
 
 from accelerate import Accelerator
@@ -138,7 +139,6 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
-                                               load_in_8bit=True,
                                                device_map="auto",
                                                torch_dtype=torch.bfloat16,
                                                )
@@ -261,6 +261,11 @@ def train(training_args):
     max_new_tokens = training_args.max_new_tokens
     shard_model = training_args.shard_model
     max_model_shard_size = training_args.max_model_shard_size
+    deep_speed_inf = training_args.deep_speed_inf
+    top_p = training_args.top_p
+    injection_policy = training_args.injection_policy
+    auto_kernel_injection = training_args.auto_kernel_injection
+    use_default_gen_config = training_args.use_default_gen_config
 
     set_seed(seed)
 
@@ -303,13 +308,13 @@ def train(training_args):
             bnb_4bit_compute_type=compute_dtype,
             bnb_4bit_quant_type=bnb_4bit_quant_type,
             llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=10.0,
+            llm_int8_threshold=6.0,
         )
     elif use_8bit:
         quant_config = BitsAndBytesConfig(
             load_in_8bit=use_8bit,
             llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=10.0,
+            llm_int8_threshold=6.0,
         )
     else:
         quant_config = None
@@ -324,24 +329,27 @@ def train(training_args):
         bias="lora_only"
     )
 
-    try:
-        generation_config, unused_config = GenerationConfig.from_pretrained(
-            model_name_or_path, top_k=top_k, do_sample=not no_sample, return_unused_kwargs=True,
-            no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=not no_early_stopping,
-            max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
-            truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
-            max_new_tokens=max_new_tokens,
-        )
-        if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
-    except Exception as e:
-        warnings.warn(f"The model {model_name_or_path} does not have a generation config")
-        warnings.warn(f"Error message: {e}")
-        generation_config = GenerationConfig.from_dict(config_dict={
-            "top_k": top_k, "do_sample": not no_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": not no_early_stopping,
-            "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
-            "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
-            "max_length": max_length, "truncation": not no_truncation
-        })
+    if not use_default_gen_config:
+        try:
+            generation_config, unused_config = GenerationConfig.from_pretrained(
+                model_name_or_path, top_k=top_k, do_sample=not no_sample, return_unused_kwargs=True,
+                no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=not no_early_stopping,
+                max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
+                truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
+                max_new_tokens=max_new_tokens, top_p=top_p
+            )
+            if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
+        except Exception as e:
+            warnings.warn(f"The model {model_name_or_path} does not have a generation config")
+            warnings.warn(f"Error message: {e}")
+            generation_config = GenerationConfig.from_dict(config_dict={
+                "top_k": top_k, "do_sample": not no_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": not no_early_stopping,
+                "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
+                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
+                "max_length": max_length, "truncation": not no_truncation, "top_p": top_p
+            })
+    else:
+        generation_config = None
     accelerator.print(f"Model generation config: {generation_config}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
@@ -484,8 +492,7 @@ def train(training_args):
     ]
 
     # bnb.optim.PagedAdamW8bit
-    optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters,
-                                               lr=lr)
+    optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters, lr=lr)
     accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
 
     # lr scheduler
@@ -557,10 +564,33 @@ def train(training_args):
                                              shard_model=shard_model,
                                              max_memory={0: "0.3GB"},
                                              max_shard_size=max_model_shard_size)
-                # if better_transformer: inference_model.to_bettertransformer()
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
                 inference_model = adapter
+
+            if deep_speed_inf:
+                world_size = int(os.getenv('WORLD_SIZE', '1'))
+                os.environ["RANK"] = "0"
+                os.environ["LOCAL_RANK"] = "0"
+                os.environ["WORLD_SIZE"] = "1"
+
+                # The injection_policy shows two things:
+                #   1. which layer module we need to add Tensor-Parallelism
+                #   2. the name of several linear layers: a) attention_output (both encoder and decoder),
+                #       and b) transformer output
+                accelerator.print(f"Model type for inference: {type(inference_model)}")
+                injection_config = {
+                    "replace_with_kernel_inject": auto_kernel_injection,
+                    "injection_policy": injection_policy
+                } if auto_kernel_injection or injection_policy else {}
+
+                inference_model = deepspeed.init_inference(
+                    accelerator.unwrap_model(inference_model),
+                    mp_size=world_size,
+                    dtype=torch.bfloat16,
+                    **injection_config
+                )
+
             inference_model.eval()
             eval_preds = []
             if generate_eval:
@@ -571,7 +601,7 @@ def train(training_args):
                             inference_model(**batch)
                         batch = {k: v for k, v in batch.items() if k != "labels"}
                         with torch.no_grad():
-                            outputs = accelerator.unwrap_model(inference_model).generate(
+                            outputs = inference_model.generate(
                                 **batch, generation_config=generation_config,
                                 synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
                                 pad_token_id=tokenizer.pad_token_id
@@ -636,7 +666,7 @@ def train(training_args):
                         for key, value in vars(training_args).items():
                             log_file.write(f"\n {key}: {value} ")
 
-                except IOError as e:
+                except Exception as e:
                     warnings.warn(f"Can't save config for this run {epoch}\n"
                                   f"Error message: {e}")
                     pass
@@ -691,7 +721,7 @@ def train(training_args):
                             for key, value in vars(training_args).items():
                                 log_file.write(f"\n {key}: {value} ")
 
-                    except IOError as e:
+                    except Exception as e:
                         warnings.warn(f"Can't save config for this run {epoch}\n"
                                       f"Error message: {e}")
                         pass

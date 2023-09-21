@@ -324,7 +324,7 @@ class QADataloader:
                                 sampler=sampler,
                                 collate_fn=collate_function,
                                 batch_size=batch_size,
-                                drop_last=True,
+                                drop_last=False, # Keep this false for no model print evaluation mismatch
                                 pin_memory=torch.cuda.is_available(),
                                 worker_init_fn=self.seed_worker,
                                 )
