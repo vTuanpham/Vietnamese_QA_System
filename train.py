@@ -5,6 +5,8 @@ from ast import literal_eval
 
 from transformers import models
 
+import deepspeed.module_inject as module_inject
+
 from src.models.trainer import train
 
 
@@ -16,6 +18,7 @@ def parse_arguments():
     parser.add_argument("--model_dtype", type=str, default="auto", help="Model torch_dtype")
     parser.add_argument("--print_model_key", action='store_true', help="Whether to print out model structure")
     parser.add_argument("--shard_model", action="store_true", help="Sharded the model weight to fit on memory")
+    parser.add_argument("--shard_model_merge", action="store_true", help="Shard the model to load and then merge weight to peft")
     parser.add_argument("--max_model_shard_size", type=str, default="1GB", help="Max size per model shard")
 
     peft_group = parser.add_argument_group("Parameters efficient arguments")
@@ -43,8 +46,6 @@ def parse_arguments():
     parser.add_argument("--seed", type=int, default=43, help="Random seed")
     parser.add_argument("--do_test", action='store_true', help="Flag to perform testing")
     parser.add_argument("--do_eval", action='store_true', help="Flag to perform evaluation")
-    parser.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
-    parser.add_argument("--do_generate_eval", action="store_true", help="Flag to enable model.generate eval")
 
     parser.add_argument("--merge_weight_eval", action='store_true', help="Flag to enable merge weight from peft for faster eval")
     parser.add_argument("--gradient_checkpointing", action='store_true', help="Use gradient checkpointing")
@@ -55,15 +56,19 @@ def parse_arguments():
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
     dataloader_group.add_argument("--train_batch_size", type=int, default=4, help="Training batch size")
-    dataloader_group.add_argument("--eval_batch_size", type=int, default=8, help="Evaluation batch size")
+    dataloader_group.add_argument("--perplexity_eval_batch_size", type=int, default=8, help="Perplexity evaluation batch size")
+    dataloader_group.add_argument("--generative_eval_batch_size", type=int, default=8, help="Generative evaluation batch size")
     dataloader_group.add_argument("--text_column", type=str, default="prompt", help="Text column")
     dataloader_group.add_argument("--label_column", type=str, default="target", help="Label column")
-    dataloader_group.add_argument("--block_size", type=int, default=128, help="")
+    dataloader_group.add_argument("--block_size", type=int, default=768, help="Block size for group text function")
+    dataloader_group.add_argument("--do_group_texts", action="store_true", help="Do group text, great for pretraining phase")
+    dataloader_group.add_argument("--model_max_length", type=int, default=1024, help="The model maximum length")
+    dataloader_group.add_argument("--context_length", type=int, default=768, help="The model maximum context length")
     dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[
-        r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+        # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
         r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
-        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
+        # r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
     ], help="List of training files")
 
     dataloader_group.add_argument("--val_file", nargs='+', type=str, default=[
@@ -85,6 +90,8 @@ def parse_arguments():
     dataloader_group.add_argument("--config_type", type=str, default="AdvanceInstructSample", help="Configuration type")
     dataloader_group.add_argument("--no_preprocess_data", action="store_true", help="Whether to tokenized the data first"
                                                                                     "turn off this flag for large dataset")
+    dataloader_group.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
+    dataloader_group.add_argument("--do_generative_eval", action="store_true", help="Flag to enable model.generate eval")
 
     generation_group = parser.add_argument_group("Generation Arguments")
     generation_group.add_argument("--top_k", type=int, default=1, help="Top-k value ")
@@ -105,7 +112,8 @@ def parse_arguments():
     generation_group.add_argument("--use_default_gen_config", action="store_true", help="Use model's default gen config")
     generation_group.add_argument("--injection_policy", type=json.loads, default=None,
                                   help="Which layer module to add Tensor-parallelism and the name of linear layers"
-                                       "(eg {t5.modeling_t5.T5Block: ('SelfAttention.o', 'EncDecAttention.o', 'DenseReluDense.wo')}")
+                                       "(eg '''{t5.modeling_t5.T5Block: ('SelfAttention.o', 'EncDecAttention.o', 'DenseReluDense.wo')}'''"
+                                       "")
     generation_group.add_argument("--auto_kernel_injection", action="store_true",
                                   help="Enable kernel injection for deepspeed inference")
 
@@ -113,8 +121,7 @@ def parse_arguments():
 
     # Sanity check
     if args.use_8bit and args.use_4bit:
-        pass
-        # raise "Can't use 8bit and 4bit quantization at the same time"
+        raise "Can't use 8bit and 4bit quantization at the same time"
 
     if args.deep_speed_inf and args.num_beams > 1:
         raise "Deepspeed inference can't use num beams higher than 1"
@@ -138,7 +145,18 @@ def parse_arguments():
             if idx == 0: fetch_module = models
             fetch_module = getattr(fetch_module, module)
 
-        args.injection_policy = {fetch_module: tuple(list(args.injection_policy.values())[0])}
+        try:
+            # The injection policy value can be in the deepspeed module_inject module
+            for idx, module in enumerate(list(args.injection_policy.values())[0].split(".")):
+                if idx == 0: fetch_policy = module_inject
+                fetch_policy = getattr(fetch_policy, module)
+        except Exception as e:
+            warnings.warn("Invalid injection policy for deepspeed, assuming the values is user specified"
+                          f"Error message: {e}")
+            fetch_policy = tuple(list(args.injection_policy.values())[0])
+            pass
+
+        args.injection_policy = {fetch_module: fetch_policy}
         print(f"Input injection policy: {args.injection_policy}")
 
     if args.injection_policy and args.auto_kernel_injection:

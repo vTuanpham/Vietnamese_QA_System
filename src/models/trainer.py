@@ -4,6 +4,7 @@ import math
 import os
 import random
 import shutil
+import logging
 import subprocess
 from copy import deepcopy
 import warnings
@@ -26,16 +27,19 @@ import deepspeed
 import torch.nn as nn
 
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import DistributedType
 from accelerate.state import AcceleratorState
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
+import datasets, transformers
 from transformers import \
     (AutoModelForCausalLM,
      AutoModelForSeq2SeqLM,
      AutoTokenizer,
      get_linear_schedule_with_warmup,
+     get_cosine_schedule_with_warmup,
      set_seed,
      BitsAndBytesConfig,
      GenerationConfig,
@@ -48,6 +52,9 @@ from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, pr
 from src.data import QADataloader
 from src.models.model_utils import poor_man_llm_load
 from src.data.configs import AdvanceInstructSample, AdvanceQAExample
+
+
+logger = get_logger(__name__)
 
 
 def levenshtein_distance(str1, str2):
@@ -98,8 +105,8 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
-        "device_map": "auto",
-        "offload_folder": "offload_inf",
+        # "device_map": "auto",
+        # "offload_folder": "offload_inf",
         "torch_dtype": torch.bfloat16,
         "use_cache": True,
         "offload_state_dict": True,
@@ -201,6 +208,20 @@ def train(training_args):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps)
     accelerator.print(f"{AcceleratorState()}")
 
+    # Make one log on every process with the configuration for debugging.
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    logger.info(accelerator.state, main_process_only=False)
+    if accelerator.is_local_main_process:
+        datasets.utils.logging.set_verbosity_warning()
+        transformers.utils.logging.set_verbosity_info()
+    else:
+        datasets.utils.logging.set_verbosity_error()
+        transformers.utils.logging.set_verbosity_error()
+
     # LoRA attention dimension
     lora_r = training_args.lora_r
     # Alpha parameter for LoRA scaling
@@ -222,7 +243,8 @@ def train(training_args):
     model_name_or_path = training_args.model_name_or_path
     dataset_name = training_args.dataset_name
     train_batch_size = training_args.train_batch_size
-    eval_batch_size = training_args.eval_batch_size
+    perplexity_eval_batch_size = training_args.perplexity_eval_batch_size
+    generative_eval_batch_size = training_args.generative_eval_batch_size
     text_column = training_args.text_column
     label_column = training_args.label_column
     lr = training_args.lr
@@ -235,13 +257,16 @@ def train(training_args):
     target_modules = training_args.target_modules
     task_type = training_args.model_type
     block_size = training_args.block_size
+    do_group_texts = training_args.do_group_texts
+    model_max_length = training_args.model_max_length
+    context_length = training_args.context_length
     better_transformer = training_args.better_transformer
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
     optim_name = training_args.Optim_name
     model_dtype = training_args.model_dtype
     perplexity_eval = training_args.do_perplexity_eval
-    generate_eval = training_args.do_generate_eval
+    generative_eval = training_args.do_generative_eval
     merge_weight_eval = training_args.merge_weight_eval
     print_model_key = training_args.print_model_key
 
@@ -266,6 +291,7 @@ def train(training_args):
     injection_policy = training_args.injection_policy
     auto_kernel_injection = training_args.auto_kernel_injection
     use_default_gen_config = training_args.use_default_gen_config
+    shard_model_merge = training_args.shard_model_merge
 
     set_seed(seed)
 
@@ -275,6 +301,7 @@ def train(training_args):
     task_type = getattr(TaskType, task_type)
 
     dataloader_args = {
+        "accelerator": accelerator,
         "model_name": model_name_or_path,
         "text_column": text_column,
         "target_column": label_column,
@@ -282,7 +309,8 @@ def train(training_args):
         "val_file": training_args.val_file,
         "test_file": training_args.test_file,
         "train_batch_size": train_batch_size,
-        "eval_batch_size": eval_batch_size,
+        "perplexity_eval_batch_size": perplexity_eval_batch_size,
+        "generative_eval_batch_size": generative_eval_batch_size,
         "seed": seed,
         "max_train_samples": training_args.max_train_samples,
         "max_eval_samples": training_args.max_eval_samples,
@@ -291,6 +319,11 @@ def train(training_args):
         "task_type": task_type,
         "block_size": block_size,
         "no_preprocess_data": no_preprocess_data,
+        "do_group_texts": do_group_texts,
+        "do_perplexity_eval": perplexity_eval,
+        "do_generative_eval": generative_eval,
+        "model_max_length": model_max_length,
+        "context_length": context_length,
     }
 
     # Check GPU compatibility with bfloat16
@@ -364,7 +397,7 @@ def train(training_args):
     qa_dataloader_instance = qa_dataloader.__call__()
 
     accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
-    for idx, data in enumerate(iter(qa_dataloader_instance['test'])):
+    for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
         accelerator.print("\n==============================================================================\n")
         accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
         labels = data['labels'].cpu().numpy()
@@ -408,6 +441,10 @@ def train(training_args):
         "config": config,
     }
 
+    if "gpt2" in model_name_or_path:
+        full_model_config["scale_attn_by_inverse_layer_idx"] = True
+        full_model_config["reorder_and_upcast_attn"] = True
+
     if model_offload: full_model_config = {**full_model_config, **offload_config}
 
     # creating model
@@ -442,6 +479,12 @@ def train(training_args):
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
                                            additional_kwargs=full_model_config)
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
+
+    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
+    # on a small vocab and want a smaller embedding size, remove this test.
+    embedding_size = base_model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_size:
+        base_model.resize_token_embeddings(len(tokenizer))
 
     if better_transformer:
         try:
@@ -496,21 +539,21 @@ def train(training_args):
     accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
 
     # lr scheduler
-    lr_scheduler = get_linear_schedule_with_warmup(
+    lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=1,
+        num_warmup_steps=20,
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
 
-    adapter, train_dataloader, eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
+    adapter, train_dataloader, perplexity_eval_dataloader, generative_eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
+        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval']['perplexity_eval'], qa_dataloader_instance['eval']['generative_eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
     )
 
     is_ds_zero_3 = False
     if getattr(accelerator.state, "deepspeed_plugin", None):
         is_ds_zero_3 = accelerator.state.deepspeed_plugin.zero_stage == 3
 
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs), desc="Training progress"):
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
@@ -551,6 +594,7 @@ def train(training_args):
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=}")
 
+        # TODO: Refactor evaluation
         if do_eval:
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
             if merge_weight_eval:
@@ -561,7 +605,7 @@ def train(training_args):
                                              main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                              model_type=task_type,
                                              better_transformer=better_transformer,
-                                             shard_model=shard_model,
+                                             shard_model=shard_model_merge,
                                              max_memory={0: "0.3GB"},
                                              max_shard_size=max_model_shard_size)
             else:
@@ -593,9 +637,9 @@ def train(training_args):
 
             inference_model.eval()
             eval_preds = []
-            if generate_eval:
+            if generative_eval:
                 with TorchTracemalloc() as tracemalloc:
-                    for idx, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating epoch {epoch}")):
+                    for idx, batch in enumerate(tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
                         # Pass dummy batch to avoid caffe error
                         if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                             inference_model(**batch)
@@ -628,7 +672,7 @@ def train(training_args):
                         tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
                     )
                 )
-            if task_type == "SEQ_2_SEQ_LM" and generate_eval:
+            if task_type == "SEQ_2_SEQ_LM" and generative_eval:
                 correct = 0
                 total = 0
                 assert len(eval_preds) == len(
@@ -672,18 +716,18 @@ def train(training_args):
                     pass
 
             elif task_type == "CAUSAL_LM":
+                torch.backends.cuda.enable_mem_efficient_sdp(False)
+                torch.backends.cuda.enable_flash_sdp(False)
                 perplexity = 0
                 if perplexity_eval:
                     inference_model.eval()
                     losses = []
-                    for step, batch in enumerate(eval_dataloader):
+                    for step, batch in enumerate(tqdm(perplexity_eval_dataloader, desc=f"Evaluating epoch {epoch} perplexity")):
                         with torch.no_grad():
-                            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
-                                                                enable_mem_efficient=True):
-                                outputs = inference_model(**batch)
+                            outputs = inference_model(**batch)
 
                         loss = outputs.loss
-                        losses.append(accelerator.gather_for_metrics(loss.repeat(qa_dataloader.eval_batch_size)))
+                        losses.append(accelerator.gather_for_metrics(loss.repeat(qa_dataloader.perplexity_eval_batch_size)))
 
                     losses = torch.cat(losses)
                     try:
@@ -694,7 +738,7 @@ def train(training_args):
 
                     accelerator.print(f"epoch {epoch}: perplexity: {perplexity} eval_loss: {eval_loss}")
 
-                if generate_eval:
+                if generative_eval:
                     try:
                         cur_dir = os.getcwd()
                         if '/' in model_name_or_path:
@@ -706,25 +750,29 @@ def train(training_args):
                             # Log info
                             log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
                             log_file.write(f"\n       Perplexity: {perplexity}\n")
-                            for i in range(0, 10):
-                                idx = random.randint(0, len(eval_preds)-1)
-                                accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                                accelerator.print(f"    Evaluation prediction: {eval_preds[idx]}\n")
-                                accelerator.print(f"    Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                            for i in range(0, 20):
+                                try:
+                                    idx = random.randint(0, len(eval_preds)-1)
+                                    accelerator.print(f"        Question:\n {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                                    accelerator.print(f"    Evaluation prediction:\n {eval_preds[idx]}\n")
+                                    accelerator.print(f"    Actual label:\n {qa_dataloader.dataset['eval'][idx][label_column]}\n")
 
-                                log_file.write("===================================================================\n")
-                                log_file.write(f"Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
-                                log_file.write(f"Evaluation prediction: {eval_preds[idx]}\n")
-                                log_file.write(f"Actual label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
-                                log_file.write("===================================================================\n")
+                                    log_file.write("===================================================================\n")
+                                    log_file.write(f"Question:\n {qa_dataloader.dataset['eval'][idx][text_column]}\n")
+                                    log_file.write(f"Evaluation prediction:\n {eval_preds[idx]}\n")
+                                    log_file.write(f"Actual label:\n {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+                                    log_file.write("===================================================================\n")
+                                except Exception as e:
+                                    warnings.warn(f"Can't write config for prediction with idx {idx}\n"
+                                                  f"Error message: {e}")
+                                    pass
                             log_file.write(f"\n     Training arguments: \n")
                             for key, value in vars(training_args).items():
                                 log_file.write(f"\n {key}: {value} ")
-
                     except Exception as e:
-                        warnings.warn(f"Can't save config for this run {epoch}\n"
+                        warnings.warn(f"Can't save config for this epoch {epoch}\n"
                                       f"Error message: {e}")
-                        pass
+
             del inference_model
             accelerator.print("Removing inference model offload_inf...")
             shutil.rmtree('offload_inf') if os.path.exists("offload_inf") else None
@@ -760,8 +808,8 @@ def train(training_args):
         pred_df.to_csv(f"data/{dataset_name}/predictions.csv", index=False)
 
     accelerator.wait_for_everyone()
-    if better_transformer:
-        adapter = adapter.reverse_bettertransformer()
+    # if better_transformer:
+    #     adapter = adapter.reverse_bettertransformer()
     adapter.save_pretrained(dataset_name)
     adapter.push_to_hub(
         "1TuanPham/"

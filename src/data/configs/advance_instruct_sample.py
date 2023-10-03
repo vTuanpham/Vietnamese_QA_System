@@ -60,27 +60,41 @@ class AdvanceInstructSample:
     def get_example(self,
                     inputs_column: str="prompt",
                     targets_column: str="target",
-                    system_prefix: str="System prompt:",
-                    question_prefix: str="Question:",
-                    response_prefix: str="Response:",
+                    system_prefix: str="@@@@@@@@@@@@@ System prompt:",
+                    question_prefix: str="####### Instruction:",
+                    response_prefix: str="%%%%%%% Response:",
                     is_training: bool=True,
+                    do_perplexity_eval: bool=False,
+                    do_generative_eval: bool=False,
                     task_type: str=None,
                     ) -> Dict:
         assert task_type, "Please specified the task type inorder to get the example"
 
-        system_msg = system_prefix + ' ' + self.system_prompt + "\n"
-        question_msg = question_prefix + ' ' + self.question_text + "\n"
+        system_msg = ' ' + system_prefix + '\n' + self.system_prompt + "\n\n"
+        question_msg = question_prefix + '\n' + self.question_text + "\n\n"
         prompt = system_msg + ' ' + question_msg
-        label = self.orig_answer_texts
+        label = self.orig_answer_texts + "\n"
 
         if task_type == "SEQ_2_SEQ_LM":
             return {inputs_column: prompt,
                     targets_column: label}
         elif task_type == "CAUSAL_LM":
             if is_training:
-                example_dict = {inputs_column: prompt + ' ' + response_prefix + ' ' + label}
-            else:
-                example_dict = {inputs_column: prompt + ' ' + response_prefix + ' ', targets_column: label}
+                return {inputs_column: prompt + ' ' + response_prefix + '\n' + label}
+
+            example_dict = {}
+            # The perplexity field is for perplexity evaluation, which needed the full prompt and label
+            # while the inputs_column only have prompt and response_prefix for model.generate evaluation
+            if do_generative_eval:
+                example_dict[inputs_column] = prompt + ' ' + response_prefix + '\n'
+                example_dict[targets_column] = label
+
+            if do_perplexity_eval:
+                example_dict["perplexity"] = prompt + ' ' + response_prefix + '\n' + label
+
+            if not bool(example_dict):
+                raise "Evaluation files is provided but don't know what to do with them..."
+
             return example_dict
         else:
             raise f"This task type {task_type} is not support"

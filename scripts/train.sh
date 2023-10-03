@@ -1,27 +1,38 @@
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
-        --lora_r 8 \
-        --model_name_or_path gpt2-large \
-        --max_train_samples 1000 \
-        --max_eval_samples 500 \
+        --lora_r 128 \
+        --dataset_name "Instruction_tune_5k_e3_en" \
+        --model_name_or_path EleutherAI/gpt-neo-125m \
+        --max_train_samples 200 \
+        --max_eval_samples 100 \
         --train_batch_size 4 \
-        --val_file "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json" "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
-        --num_epochs 2 \
+        --val_file "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
+        --train_file "src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json" "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
+        --num_epochs 5 \
+        --seed 52 \
+        --lr 5e-4 \
+        --lora_dropout 0.2 \
         --model_type CAUSAL_LM \
-        --gradient_accumulation_steps 32 \
+        --gradient_accumulation_steps 4 \
         --better_transformer \
-        --eval_batch_size 6 \
-        --lora_alpha 32 \
-        --Optim_name PagedLion8bit \
+        --generative_eval_batch_size 16 \
+        --perplexity_eval_batch_size 4 \
+        --lora_alpha 16 \
+        --Optim_name PagedAdamW8bit \
         --enable_model_offload \
         --gradient_checkpointing \
         --do_eval \
         --use_8bit \
-        --do_generate_eval \
         --llm_int8_enable_fp32_cpu_offload \
-        --max_model_shard_size 200MB \
+        --max_model_shard_size 300MB \
         --num_beams 1 \
         --no_early_stopping \
         --merge_weight_eval \
         --deep_speed_inf \
-        --print_model_key \
-        --shard_model
+        --do_perplexity_eval \
+        --do_generative_eval \
+        --model_max_length 1512 \
+        --context_length 1512 \
+        --use_default_gen_config \
+        --print_model_key
+#        --auto_kernel_injection \
+#        --injection_policy '''{"gpt2.modeling_gpt2.GPT2Block": "replace_policy.HFGPT2LayerPolicy"}''' \
