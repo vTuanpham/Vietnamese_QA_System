@@ -55,8 +55,8 @@ class ELI5Parser(DataParser):
 
 
 if __name__ == '__main__':
-    eli5_parser = ELI5Parser(r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\DPRMarxism_QA\src\data\features\final_storge_converted\ELI5\ELI5_val.jsonl",
-                             r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\DPRMarxism_QA\src\data\features\final_storge_converted\ELI5",
+    eli5_parser = ELI5Parser(r"src/data/features/final_storge_converted/ELI5/ELI5_val.jsonl",
+                             r"src/data/features/final_storge_converted/ELI5",
                              max_ctxs=12)
     eli5_parser.read()
     eli5_parser.convert()

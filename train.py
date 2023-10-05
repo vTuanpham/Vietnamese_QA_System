@@ -24,7 +24,7 @@ def parse_arguments():
     peft_group = parser.add_argument_group("Parameters efficient arguments")
     peft_group.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
     peft_group.add_argument("--lora_alpha", type=int, default=64, help="Alpha parameter for LoRA scaling")
-    peft_group.add_argument("--lora_dropout", type=float, default=0.04, help="Dropout probability for LoRA layers")
+    peft_group.add_argument("--lora_dropout", type=float, default=None, help="Dropout probability for LoRA layers")
     peft_group.add_argument("--target_modules", nargs='+', type=str,  default=None,
                             help="The target modules for lora")
 
@@ -94,8 +94,8 @@ def parse_arguments():
     dataloader_group.add_argument("--do_generative_eval", action="store_true", help="Flag to enable model.generate eval")
 
     generation_group = parser.add_argument_group("Generation Arguments")
-    generation_group.add_argument("--top_k", type=int, default=1, help="Top-k value ")
-    generation_group.add_argument("--top_p", type=float, default=0.6, help="Top-p value")
+    generation_group.add_argument("--top_k", type=int, default=5, help="Top-k value ")
+    generation_group.add_argument("--top_p", type=float, default=0.7, help="Top-p value")
     generation_group.add_argument("--no_sample", action="store_true", help="Enable sampling (default: True)")
     generation_group.add_argument("--no_repeat_ngram_size", type=int, default=3, help="No repeat n-gram size (default: 3)")
     generation_group.add_argument("--num_beams", type=int, default=5, help="Number of beams (default: 5)")

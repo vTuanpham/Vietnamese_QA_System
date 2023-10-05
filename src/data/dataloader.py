@@ -22,6 +22,8 @@ from torch.utils.data.dataloader import DataLoader, Dataset
 from datasets import load_dataset
 from datasets import Dataset as hfDataset
 from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling, default_data_collator
+from trl import DataCollatorForCompletionOnlyLM
+
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 
@@ -133,7 +135,7 @@ class QADataloader:
         self.do_generative_eval = do_generative_eval
         if no_preprocess_data:
             warnings.warn(f"\n Preprocessing data disable, this may result in vram accumulation overtime"
-                          f"Please consider enable if the size of your dataset is smaller than 100k or your setup"
+                          f"Please consider enable if the size of your dataset is smaller than 1000k or your setup"
                           f"have lowram\n")
         self.train_file = train_file
         self.val_file = val_file
@@ -259,24 +261,24 @@ class QADataloader:
         for index in random.sample(range(len(dataset)), 3):
             print(f"Sample {index} of the training set: {dataset[index]}.")
 
-        return hfDataset.from_list(dataset) # Parse from pytorch dataset to hugging face dataset ecosystem
+        return dataset # Parse from pytorch dataset to hugging face dataset ecosystem
 
     def preprocess_data(self, dataset, split=None, perplexity_eval: bool=False):
         with self.accelerator.main_process_first():
-            tokenized_dataset = dataset.map(lambda data: self.tokenize_function(data,
-                                                                                split=split,
-                                                                                perplexity_eval=perplexity_eval),
-                                            desc=f"Running tokenizer on dataset",
-                                            remove_columns=dataset.column_names,
-                                            batched=True,
-                                            num_proc=1)
+            # tokenized_dataset = dataset.map(lambda data: self.tokenize_function(data,
+            #                                                                     split=split,
+            #                                                                     perplexity_eval=perplexity_eval),
+            #                                 desc=f"Running tokenizer on dataset",
+            #                                 remove_columns=dataset.column_names,
+            #                                 batched=True,
+            #                                 num_proc=1)
+            tokenized_dataset = list(map(lambda data: self.tokenize_function(data, split, perplexity_eval), dataset))
+
             if self.task_type == "CAUSAL_LM" and self.do_group_texts:
                 return tokenized_dataset.map(self.group_texts,
                                              desc=f"Grouping texts in chunks of {self.block_size}",
-                                             batched=True,
+                                             batched=False,
                                              num_proc=1)
-
-            print(tokenized_dataset[0])
 
             return tokenized_dataset
 
@@ -338,17 +340,11 @@ class QADataloader:
             warnings.warn(f"Cannot do perplexity eval on {self.task_type}")
             pass
 
-        # Remove empty lines
-        inputs = [
-            line for line in inputs if len(line) > 0 and not line.isspace()
-        ]
-
         inp_tokens = self.tokenizer(
             inputs,
-            padding=False,
-            return_tensors="pt",
+            # padding=False,
             return_special_tokens_mask=True,
-            truncation=True,
+            truncation="longest_first",
             max_length=self.model_max_length if split == "train" or perplexity_eval else self.context_length,
             # return_overflowing_tokens=True,
             # return_length=True,
@@ -358,8 +354,8 @@ class QADataloader:
             targets = data[self.target_column]
             tgt_tokens = self.tokenizer(
                 targets,
-                padding=True,
-                return_tensors="pt",
+                # padding=True,
+                # return_tensors="pt",
                 truncation="longest_first",
                 return_special_tokens_mask=True,
                 max_length=self.model_max_length if split == "train" else self.context_length
@@ -373,7 +369,7 @@ class QADataloader:
                     "labels": target_ids}
 
         elif self.task_type == "CAUSAL_LM":
-            return {"input_ids": inp_tokens["input_ids"], "attention_mask": inp_tokens["attention_mask"]}
+            return inp_tokens
         else:
             raise f"Unsupported task type for {self.task_type}"
 
@@ -417,7 +413,10 @@ class QADataloader:
         if self.no_preprocess_data:
             collate_function = self.dynamic_collate
         elif self.task_type == "CAUSAL_LM":
-            collate_function = DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+            collate_function = DataCollatorForCompletionOnlyLM(" %%%%%%% Response:\n",
+                                                               tokenizer=self.tokenizer,
+                                                               mlm=False,
+                                                               )
         elif self.task_type == "SEQ_2_SEQ_LM":
             collate_function = DataCollatorForSeq2Seq(self.tokenizer)
         else:
@@ -463,7 +462,7 @@ if __name__ == "__main__":
     }
 
     qa_dataset = AdvanceQa(json_file_paths=[
-                                            # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+                                            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
                                             r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"],
                            num_examples=5000,
                            config_type=AdvanceInstructSample,
@@ -472,11 +471,12 @@ if __name__ == "__main__":
     # print(qa_dataset[idx])
     # print(qa_dataset[idx].get_dict)
     # print(qa_dataset[idx].get_dict_str)
-    for i in range(0, 100):
+    for i in range(0, 20):
         idx = random.randint(0, 5000)
         # prompt = qa_dataset[idx].get_example(is_training=True, task_type="CAUSAL_LM")
+        # if len(prompt['prompt']) < 768 and len(prompt['prompt']) > 512:
+        #     print(prompt)
         prompt = qa_dataset[idx]
-        # if len(prompt['prompt']) < 512:
         print(prompt)
 
     qa_dataloader = QADataloader(**dataloader_args)

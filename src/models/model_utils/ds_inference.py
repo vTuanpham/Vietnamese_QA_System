@@ -4,8 +4,6 @@ import deepspeed
 import torch
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.models.t5.modeling_t5 import T5Block
-from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
 
 
 model_name = "tomaxe/gpt-neo-2.7B-sharded"

@@ -43,7 +43,8 @@ from transformers import \
      set_seed,
      BitsAndBytesConfig,
      GenerationConfig,
-     AutoConfig)
+     AutoConfig,
+     pipeline)
 from transformers.trainer_pt_utils import get_parameter_names
 
 import bitsandbytes as bnb
@@ -94,7 +95,7 @@ def b2mb(x):
     return int(x / 2**20)
 
 
-def merge_lora(base_model_name: str, peft_adapter: PeftModel,
+def load_adapter(base_model_name: str, peft_adapter: PeftModel,
                adapter_save_path: str, adapter_name: str, main_process: bool,
                model_type: str="CAUSAL_LM", better_transformer: bool=False,
                shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
@@ -144,17 +145,19 @@ def merge_lora(base_model_name: str, peft_adapter: PeftModel,
             warnings.warn(f"Error message: {e}")
             pass
 
-    model_to_merge = PeftModel.from_pretrained(base_model,
-                                               adapter_path_file,
-                                               device_map="auto",
-                                               torch_dtype=torch.bfloat16,
-                                               )
-
-    merged_model = model_to_merge.merge_and_unload(progressbar=True)
-    del base_model, peft_adapter, model_to_merge
+    # model_to_merge = PeftModel.from_pretrained(base_model,
+    #                                            adapter_path_file,
+    #                                            device_map="auto",
+    #                                            torch_dtype=torch.bfloat16,
+    #                                            )
+    #
+    # merged_model = model_to_merge.merge_and_unload(progressbar=True)
+    base_model.load_adapter(adapter_path_file)
+    base_model.enable_adapters()
+    # del base_model, peft_adapter, model_to_merge
     gc.collect()
 
-    return merged_model
+    return base_model
 
 
 # This context manager is used to track the peak memory usage of the process
@@ -378,11 +381,13 @@ def train(training_args):
             generation_config = GenerationConfig.from_dict(config_dict={
                 "top_k": top_k, "do_sample": not no_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": not no_early_stopping,
                 "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
-                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
+                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty, "min_new_tokens": 20,
                 "max_length": max_length, "truncation": not no_truncation, "top_p": top_p
             })
     else:
-        generation_config = None
+        generation_config = GenerationConfig.from_dict(config_dict={"min_new_tokens": 20,
+                                                                    "max_length": context_length,
+                                                                    "max_time": max_time})
     accelerator.print(f"Model generation config: {generation_config}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
@@ -483,6 +488,8 @@ def train(training_args):
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = base_model.get_input_embeddings().weight.shape[0]
+    accelerator.print(f"Model embedding size: {embedding_size}")
+    accelerator.print(f"Tokenizer vocab size: {len(tokenizer)}")
     if len(tokenizer) > embedding_size:
         base_model.resize_token_embeddings(len(tokenizer))
 
@@ -545,8 +552,11 @@ def train(training_args):
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
 
-    adapter, train_dataloader, perplexity_eval_dataloader, generative_eval_dataloader, test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval']['perplexity_eval'], qa_dataloader_instance['eval']['generative_eval'], qa_dataloader_instance['test'], optimizer, lr_scheduler
+    adapter, train_dataloader, perplexity_eval_dataloader, generative_eval_dataloader, \
+    test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
+        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval']['perplexity_eval'],
+        qa_dataloader_instance['eval']['generative_eval'],
+        qa_dataloader_instance['test'], optimizer, lr_scheduler
     )
 
     is_ds_zero_3 = False
@@ -569,6 +579,14 @@ def train(training_args):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
+                    # # Assuming outputs contains the model predictions
+                    # predicted_ids = outputs["logits"].argmax(dim=-1)  # Assuming logits represent class probabilities
+                    #
+                    # # Convert the predicted token IDs to text
+                    # predicted_text = qa_dataloader.tokenizer.decode(predicted_ids[0], skip_special_tokens=True)
+                    #
+                    # # Print the predicted text
+                    # accelerator.print("Predicted Text:", predicted_text)
                     accelerator.print(total_loss / step)
                     del loss, outputs, batch
 
@@ -599,7 +617,7 @@ def train(training_args):
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
             if merge_weight_eval:
                 accelerator.print(f"Merging model for faster inference...")
-                inference_model = merge_lora(model_name_or_path,
+                inference_model = load_adapter(model_name_or_path,
                                              peft_adapter=adapter,
                                              adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                              main_process=accelerator.is_main_process, adapter_name=dataset_name,
@@ -610,7 +628,10 @@ def train(training_args):
                                              max_shard_size=max_model_shard_size)
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
-                inference_model = adapter
+                # deepcopy since using torch.autocast which will auto cast if there is a mismatch between lora adatper
+                # and the base model dtype, deepcopy ensure that any modified inference_model dtype will not affect
+                # the base model and adapter dtype
+                inference_model = deepcopy(adapter)
 
             if deep_speed_inf:
                 world_size = int(os.getenv('WORLD_SIZE', '1'))
@@ -722,7 +743,8 @@ def train(training_args):
                 if perplexity_eval:
                     inference_model.eval()
                     losses = []
-                    for step, batch in enumerate(tqdm(perplexity_eval_dataloader, desc=f"Evaluating epoch {epoch} perplexity")):
+                    for step, batch in enumerate(tqdm(perplexity_eval_dataloader,
+                                                      desc=f"Evaluating epoch {epoch} perplexity")):
                         with torch.no_grad():
                             outputs = inference_model(**batch)
 
