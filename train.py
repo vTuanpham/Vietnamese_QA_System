@@ -60,6 +60,7 @@ def parse_arguments():
     dataloader_group.add_argument("--generative_eval_batch_size", type=int, default=8, help="Generative evaluation batch size")
     dataloader_group.add_argument("--text_column", type=str, default="prompt", help="Text column")
     dataloader_group.add_argument("--label_column", type=str, default="target", help="Label column")
+    dataloader_group.add_argument("--response_template", type=str, default=" %%%%%%% Response:\n", help="Response template prefix for DataCollatorForCompletionOnlyLM")
     dataloader_group.add_argument("--block_size", type=int, default=768, help="Block size for group text function")
     dataloader_group.add_argument("--do_group_texts", action="store_true", help="Do group text, great for pretraining phase")
     dataloader_group.add_argument("--model_max_length", type=int, default=1024, help="The model maximum length")

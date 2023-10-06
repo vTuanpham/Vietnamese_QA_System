@@ -117,6 +117,7 @@ class QADataloader:
                  do_perplexity_eval: bool=False,
                  do_generative_eval: bool=False,
                  do_group_texts: bool=False,
+                 response_template: str=" %%%%%%% Response:\n",
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -137,6 +138,7 @@ class QADataloader:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.text_column = text_column
+        self.response_template = response_template
         self.target_column = target_column
         self.config_type = config_type
         self.task_type= task_type
@@ -430,7 +432,7 @@ class QADataloader:
         if self.no_preprocess_data:
             collate_function = self.dynamic_collate
         elif self.task_type == "CAUSAL_LM":
-            collate_function = DataCollatorForCompletionOnlyLM(" %%%%%%% Response:\n",
+            collate_function = DataCollatorForCompletionOnlyLM(self.response_template,
                                                                tokenizer=self.tokenizer,
                                                                mlm=False,
                                                                )

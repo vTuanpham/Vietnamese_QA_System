@@ -33,6 +33,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --max_new_tokens 256 \
         --temperature 0.7 \
         --context_length 1024 \
+        --response_template " %%%%%%% Response:\n" \
         --max_time 100 \
         --print_model_key
 #        --auto_kernel_injection \

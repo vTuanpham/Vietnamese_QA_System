@@ -297,6 +297,7 @@ def train(training_args):
     auto_kernel_injection = training_args.auto_kernel_injection
     use_default_gen_config = training_args.use_default_gen_config
     shard_model_merge = training_args.shard_model_merge
+    response_template = training_args.response_template
 
     set_seed(seed)
 
@@ -329,6 +330,7 @@ def train(training_args):
         "do_generative_eval": generative_eval,
         "model_max_length": model_max_length,
         "context_length": context_length,
+        "response_template": response_template
     }
 
     # Check GPU compatibility with bfloat16
