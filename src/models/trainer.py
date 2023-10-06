@@ -25,6 +25,8 @@ except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import deepspeed
 import torch.nn as nn
+from torch.autograd import Variable
+
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -505,7 +507,7 @@ def train(training_args):
             pass
 
     # Please enable gradient_checkpointing at all cost, this will save your life
-    if use_4bit or use_8bit:
+    if use_4bit or use_8bit or getattr(base_model, "quantization_method", None) == "gptq":
         accelerator.print(f"Preparation for kbit training...")
         base_model = prepare_model_for_kbit_training(base_model,
                                                      use_gradient_checkpointing=gradient_checkpointing) # Prepare model in peft already include gradient-checkpoint, freeze params
@@ -571,6 +573,7 @@ def train(training_args):
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
+                    # loss = Variable(loss, requires_grad = True)
                     total_loss += loss.detach().float()
                     accelerator.backward(loss)
                     optimizer.step()

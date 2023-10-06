@@ -1,4 +1,5 @@
 import gc
+import logging
 import os
 import math
 import random
@@ -31,8 +32,9 @@ from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 class AdvanceQa(Dataset):
     def __init__(self, json_file_paths: List[str], task_type: str,
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
-                 get_example: bool = True, split: str='train', num_examples: int=100000,
-                 do_perplexity_eval: bool=False, do_generative_eval: bool=False):
+                 get_example: bool = True, split: str='train', num_examples: int = 100000,
+                 do_perplexity_eval: bool = False, do_generative_eval: bool = False,
+                 tokenizer: AutoTokenizer = None, max_seq_length: int = 1024):
         num_examples_each = math.floor(num_examples/len(json_file_paths))
         assert task_type, "Please specified task type"
         self.task_type = task_type
@@ -41,14 +43,15 @@ class AdvanceQa(Dataset):
         self.get_example = get_example
         for json_path in tqdm(json_file_paths, desc=f"Loading {split} data"):
             assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
+            num_examples_each_file = num_examples_each
             try:
                 file_name = os.path.basename(json_path)
                 extension = json_path.split(".")[-1]
-                print(f"Loading {num_examples_each} from {file_name}...")
+                print(f"Loading {num_examples_each_file} from {file_name}...")
                 iterable_json_data = load_dataset(extension, data_files=json_path,
                                                   streaming=True, keep_in_memory=False)
                 for idx, data in enumerate(iter(iterable_json_data['train'])):
-                    if idx > num_examples_each:
+                    if idx > num_examples_each_file:
                         break
                     if get_example:
                         try:
@@ -56,8 +59,18 @@ class AdvanceQa(Dataset):
                                                                                task_type=self.task_type,
                                                                                do_perplexity_eval=do_perplexity_eval,
                                                                                do_generative_eval=do_generative_eval)
-                        except KeyError:
-                            raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}"
+                            # Check if config data exceeds maximum length or not,
+                            # This check is for DataCollatorForCompletionOnlyLM
+                            if split == 'train' and task_type == 'CAUSAL_LM':
+                                config_data_tokenzied = tokenizer(config_data['prompt'])
+                                if len(config_data_tokenzied['input_ids']) > max_seq_length:
+                                    warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
+                                                 f"max seq length")
+                                    num_examples_each_file += 1
+                                    continue
+                        except KeyError as e:
+                            raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}" \
+                                  f"Error message: {e}"
                     else:
                         config_data = data
                     self.full_json_data.append(config_data)
@@ -246,6 +259,8 @@ class QADataloader:
                                 get_example=get_example,
                                 do_perplexity_eval=do_perplexity_eval,
                                 do_generative_eval= do_generative_eval,
+                                tokenizer=self.tokenizer,
+                                max_seq_length=self.model_max_length
                                 )
         else:
             dataset = AdvanceQa(json_file_paths=data_files,
@@ -255,6 +270,8 @@ class QADataloader:
                                 get_example=get_example,
                                 do_perplexity_eval=do_perplexity_eval,
                                 do_generative_eval=do_generative_eval,
+                                tokenizer=self.tokenizer,
+                                max_seq_length=self.model_max_length
                                 )
 
         # Log a few random samples from the training set:
@@ -417,6 +434,7 @@ class QADataloader:
                                                                tokenizer=self.tokenizer,
                                                                mlm=False,
                                                                )
+            # collate_function = DataCollatorForLanguageModeling(tokenizer=self.tokenizer, mlm=False)
         elif self.task_type == "SEQ_2_SEQ_LM":
             collate_function = DataCollatorForSeq2Seq(self.tokenizer)
         else:

@@ -1,22 +1,22 @@
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
-        --lora_r 64 \
+        --lora_r 128 \
         --dataset_name "Instruction_tune_5k_e3_en" \
-        --model_name_or_path EleutherAI/gpt-neo-125m \
-        --max_train_samples 6000 \
-        --max_eval_samples 100 \
-        --train_batch_size 3 \
+        --model_name_or_path EleutherAI/pythia-410m \
+        --max_train_samples 200 \
+        --max_eval_samples 50 \
+        --train_batch_size 2 \
         --val_file "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
         --train_file "src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json" "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
         --num_epochs 8 \
         --seed 53 \
-        --lr 5e-5 \
-        --lora_dropout 0.02 \
+        --lr 5e-4 \
+        --lora_dropout 0.05 \
         --model_type CAUSAL_LM \
-        --gradient_accumulation_steps 12 \
+        --gradient_accumulation_steps 8 \
         --better_transformer \
-        --generative_eval_batch_size 16 \
+        --generative_eval_batch_size 6 \
         --perplexity_eval_batch_size 2 \
-        --lora_alpha 32 \
+        --lora_alpha 16 \
         --Optim_name PagedAdamW8bit \
         --enable_model_offload \
         --gradient_checkpointing \
@@ -26,15 +26,13 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --max_model_shard_size 300MB \
         --num_beams 1 \
         --no_early_stopping \
-        --deep_speed_inf \
         --do_perplexity_eval \
         --do_generative_eval \
-        --target_modules 'k_proj' 'v_proj' 'q_proj' 'c_proj' \
+        --target_modules 'query_key_value' 'dense'  \
         --model_max_length 768 \
         --max_new_tokens 256 \
-        --temperature 0.8 \
+        --temperature 0.7 \
         --context_length 1024 \
-        --merge_weight_eval \
         --max_time 100 \
         --print_model_key
 #        --auto_kernel_injection \
