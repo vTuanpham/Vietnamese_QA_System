@@ -34,6 +34,8 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --temperature 0.7 \
         --context_length 1024 \
         --response_template " %%%%%%% Response:" \
-        --print_model_key
-#        --auto_kernel_injection \
+        --print_model_key \
+        --deep_speed_inf \
+        --auto_kernel_injection
+#        --use_flash_attention_2 \
 #        --injection_policy '''{"gpt2.modeling_gpt2.GPT2Block": "replace_policy.HFGPT2LayerPolicy"}''' \

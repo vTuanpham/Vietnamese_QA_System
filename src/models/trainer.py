@@ -298,6 +298,8 @@ def train(training_args):
     use_default_gen_config = training_args.use_default_gen_config
     shard_model_merge = training_args.shard_model_merge
     response_template = training_args.response_template
+    minimum_free_spaces = training_args.minimum_free_spaces
+    use_flash_attention_2 = training_args.use_flash_attention_2
 
     set_seed(seed)
 
@@ -425,7 +427,7 @@ def train(training_args):
 
     # System setup info
     free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
-    max_memory = f'{int(torch.cuda.mem_get_info()[0] / 1024 ** 3) - 2}GB'
+    max_memory = f'{int(torch.cuda.mem_get_info()[0] / 1024 ** 3) - minimum_free_spaces}GB'
     n_gpus = torch.cuda.device_count()
     max_memory = {i: max_memory for i in range(n_gpus)}
 
@@ -448,6 +450,7 @@ def train(training_args):
         "load_in_4bit": use_4bit,
         "torch_dtype": model_dtype,
         "config": config,
+        "use_flash_attention_2": use_flash_attention_2
     }
 
     if "gpt2" in model_name_or_path:
@@ -466,6 +469,7 @@ def train(training_args):
                                                               load_in_4bit=use_4bit,
                                                               torch_dtype=model_dtype,
                                                               config=config,
+                                                              use_flash_attention_2=use_flash_attention_2,
                                                               **offload_config
                                                         )
         else:
@@ -481,6 +485,7 @@ def train(training_args):
                                                               load_in_4bit=use_4bit,
                                                               torch_dtype=model_dtype,
                                                               config=config,
+                                                              use_flash_attention_2=use_flash_attention_2,
                                                               **offload_config
                                                             )
         else:
@@ -657,7 +662,7 @@ def train(training_args):
                 inference_model = deepspeed.init_inference(
                     accelerator.unwrap_model(inference_model),
                     mp_size=world_size,
-                    dtype=torch.bfloat16,
+                    # dtype=torch.half,
                     **injection_config
                 )
 
