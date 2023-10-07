@@ -96,7 +96,9 @@ def parse_arguments():
     dataloader_group.add_argument("--no_preprocess_data", action="store_true", help="Whether to tokenized the data first"
                                                                                     "turn off this flag for large dataset")
     dataloader_group.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
+    dataloader_group.add_argument("--max_eval_generative_samples", type=int, default=50, help="Max generative examplew for manual evaluation")
     dataloader_group.add_argument("--do_generative_eval", action="store_true", help="Flag to enable model.generate eval")
+    dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=500, help="Max evaluation examples for perplexity evaluation")
 
     generation_group = parser.add_argument_group("Generation Arguments")
     generation_group.add_argument("--top_k", type=int, default=5, help="Top-k value ")

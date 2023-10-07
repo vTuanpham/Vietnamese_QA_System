@@ -300,6 +300,8 @@ def train(training_args):
     response_template = training_args.response_template
     minimum_free_spaces = training_args.minimum_free_spaces
     use_flash_attention_2 = training_args.use_flash_attention_2
+    max_eval_generative_samples = training_args.max_eval_generative_samples
+    max_eval_perplexity_samples = training_args.max_eval_perplexity_samples
 
     set_seed(seed)
 
@@ -332,7 +334,9 @@ def train(training_args):
         "do_generative_eval": generative_eval,
         "model_max_length": model_max_length,
         "context_length": context_length,
-        "response_template": response_template
+        "response_template": response_template,
+        "max_eval_generative_samples": max_eval_generative_samples,
+        "max_eval_perplexity_samples": max_eval_perplexity_samples
     }
 
     # Check GPU compatibility with bfloat16
@@ -450,7 +454,7 @@ def train(training_args):
         "load_in_4bit": use_4bit,
         "torch_dtype": model_dtype,
         "config": config,
-        "use_flash_attention_2": use_flash_attention_2
+        # "use_flash_attention_2": use_flash_attention_2
     }
 
     if "gpt2" in model_name_or_path:
@@ -469,7 +473,7 @@ def train(training_args):
                                                               load_in_4bit=use_4bit,
                                                               torch_dtype=model_dtype,
                                                               config=config,
-                                                              use_flash_attention_2=use_flash_attention_2,
+                                                              # use_flash_attention_2=use_flash_attention_2,
                                                               **offload_config
                                                         )
         else:
@@ -485,7 +489,7 @@ def train(training_args):
                                                               load_in_4bit=use_4bit,
                                                               torch_dtype=model_dtype,
                                                               config=config,
-                                                              use_flash_attention_2=use_flash_attention_2,
+                                                              # use_flash_attention_2=use_flash_attention_2,
                                                               **offload_config
                                                             )
         else:
@@ -782,9 +786,8 @@ def train(training_args):
                             # Log info
                             log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
                             log_file.write(f"\n       Perplexity: {perplexity}\n")
-                            for i in range(0, 20):
+                            for idx in range(0, len(eval_preds)-1):
                                 try:
-                                    idx = random.randint(0, len(eval_preds)-1)
                                     accelerator.print(f"        Question:\n {qa_dataloader.dataset['eval'][idx][text_column]}\n")
                                     accelerator.print(f"    Evaluation prediction:\n {eval_preds[idx]}\n")
                                     accelerator.print(f"    Actual label:\n {qa_dataloader.dataset['eval'][idx][label_column]}\n")

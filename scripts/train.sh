@@ -1,21 +1,22 @@
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
-        --lora_r 128 \
+        --lora_r 64 \
         --dataset_name "Instruction_tune_5k_e3_en" \
-        --model_name_or_path EleutherAI/pythia-410m \
+        --model_name_or_path EleutherAI/gpt-neo-125m \
         --max_train_samples 200 \
-        --max_eval_samples 50 \
+        --max_eval_samples 600 \
         --train_batch_size 2 \
         --val_file "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
         --train_file "src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json" "src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json" \
         --num_epochs 8 \
         --seed 53 \
-        --lr 5e-4 \
-        --lora_dropout 0.05 \
+        --lr 5e-6 \
+        --lora_dropout 0.03 \
         --model_type CAUSAL_LM \
-        --gradient_accumulation_steps 8 \
-        --better_transformer \
+        --gradient_accumulation_steps 2 \
         --generative_eval_batch_size 6 \
+        --max_eval_generative_samples 20 \
         --perplexity_eval_batch_size 2 \
+        --max_eval_perplexity_samples 500 \
         --lora_alpha 16 \
         --Optim_name PagedAdamW8bit \
         --enable_model_offload \
@@ -28,7 +29,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --no_early_stopping \
         --do_perplexity_eval \
         --do_generative_eval \
-        --target_modules 'query_key_value' 'dense'  \
+        --target_modules 'k_proj' 'v_proj' 'q_proj' \
         --model_max_length 768 \
         --max_new_tokens 256 \
         --temperature 0.7 \

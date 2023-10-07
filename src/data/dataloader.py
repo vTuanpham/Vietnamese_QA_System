@@ -105,6 +105,8 @@ class QADataloader:
                  test_file: Optional[Union[str, List[str]]]=None,
                  train_batch_size: int = 8,
                  generative_eval_batch_size: int=16,
+                 max_eval_generative_samples: Optional[int] = None,
+                 max_eval_perplexity_samples: Optional[int] = None,
                  perplexity_eval_batch_size: int=6,
                  test_batch_size: int=16,
                  block_size: int=768,
@@ -167,6 +169,18 @@ class QADataloader:
 
         self.max_train_samples = max_train_samples
         self.max_eval_samples = max_eval_samples
+        if not max_eval_generative_samples:
+            self.max_eval_generative_samples = max_eval_samples
+        else:
+            assert max_eval_samples > max_eval_generative_samples, "Max eval generative samples can't be larger than the" \
+                                                                   "whole eval dataset"
+            self.max_eval_generative_samples = max_eval_generative_samples
+        if not max_eval_perplexity_samples:
+            self.max_eval_perplexity_samples = max_eval_samples
+        else:
+            assert max_eval_samples > max_eval_perplexity_samples, "Max eval perplexity samples can't be larger than the" \
+                                                                   "whole eval dataset"
+            self.max_eval_perplexity_samples = max_eval_perplexity_samples
         self.max_predict_samples = max_predict_samples
 
         # TODO: Investigate block size string concatenation for efficient training
@@ -207,12 +221,16 @@ class QADataloader:
                                           do_perplexity_eval=self.do_perplexity_eval,
                                           do_generative_eval=self.do_generative_eval)
             if self.do_generative_eval or self.task_type == "SEQ_2_SEQ_LM":
-                dataloaders['eval']['generative_eval'] = self.get_dataloader(eval_dataset if self.no_preprocess_data else self.preprocess_data(eval_dataset),
-                                                          batch_size=self.generative_eval_batch_size)
+                eval_dataset_input = random.sample(list(eval_dataset), self.max_eval_generative_samples)
+                eval_dataset_input = eval_dataset_input if self.no_preprocess_data else self.preprocess_data(eval_dataset_input)
+                dataloaders['eval']['generative_eval'] = self.get_dataloader(eval_dataset_input,
+                                                                             batch_size=self.generative_eval_batch_size)
             if self.do_perplexity_eval and not self.task_type == "SEQ_2_SEQ_LM":
-                dataloaders['eval']['perplexity_eval'] = self.get_dataloader(eval_dataset if self.no_preprocess_data else self.preprocess_data(eval_dataset,
-                                                                                                                                       perplexity_eval=self.do_perplexity_eval),
-                                                                     batch_size=self.perplexity_eval_batch_size)
+                eval_dataset_input = eval_dataset[:self.max_eval_perplexity_samples]
+                eval_dataset_input = eval_dataset_input if self.no_preprocess_data else self.preprocess_data(eval_dataset_input,
+                                                                                        perplexity_eval=self.do_perplexity_eval)
+                dataloaders['eval']['perplexity_eval'] = self.get_dataloader(eval_dataset_input,
+                                                                             batch_size=self.perplexity_eval_batch_size)
             self.dataset['eval'] = eval_dataset
 
         if self.test_file is not None:
