@@ -101,7 +101,7 @@ def parse_arguments():
     generation_group.add_argument("--no_repeat_ngram_size", type=int, default=3, help="No repeat n-gram size (default: 3)")
     generation_group.add_argument("--num_beams", type=int, default=5, help="Number of beams (default: 5)")
     generation_group.add_argument("--no_early_stopping", action="store_true", help="Enable early stopping (default: True)")
-    generation_group.add_argument("--max_time", type=int, default=100, help="Max time (default: 100)")
+    generation_group.add_argument("--max_time", type=int, default=None, help="Max time")
     generation_group.add_argument("--penalty_alpha", type=float, default=1.2, help="Penalty alpha (default: 1.2)")
     generation_group.add_argument("--repetition_penalty", type=float, default=2.5, help="Repetition penalty (default: 2.5)")
     generation_group.add_argument("--temperature", type=float, default=0.6, help="Temperature (default: 1.5)")

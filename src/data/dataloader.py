@@ -117,7 +117,7 @@ class QADataloader:
                  do_perplexity_eval: bool=False,
                  do_generative_eval: bool=False,
                  do_group_texts: bool=False,
-                 response_template: str=" %%%%%%% Response:\n",
+                 response_template: str=" %%%%%%% Response:",
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -462,11 +462,16 @@ if __name__ == "__main__":
         "model_name": "EleutherAI/gpt-neo-125m",
         "text_column": "prompt",
         "target_column": "target",
-        "train_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+        "train_file": [
+                       r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
                        r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
                        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
-                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"],
-        "val_file": [r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json"],
+                       r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
+                        ],
+        "val_file": [
+            # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"
+        ],
         "train_batch_size": 8,
         "perplexity_eval_batch_size": 6,
         "generative_eval_batch_size": 8,
@@ -481,23 +486,23 @@ if __name__ == "__main__":
         "do_generative_eval": True
     }
 
-    qa_dataset = AdvanceQa(json_file_paths=[
-                                            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
-                                            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"],
-                           num_examples=5000,
-                           config_type=AdvanceInstructSample,
-                           get_example=False,
-                           task_type="CAUSAL_LM")
+    # qa_dataset = AdvanceQa(json_file_paths=[
+    #                                         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+    #                                         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"],
+    #                        num_examples=5000,
+    #                        config_type=AdvanceInstructSample,
+    #                        get_example=False,
+    #                        task_type="CAUSAL_LM")
     # print(qa_dataset[idx])
     # print(qa_dataset[idx].get_dict)
     # print(qa_dataset[idx].get_dict_str)
-    for i in range(0, 20):
-        idx = random.randint(0, 5000)
-        # prompt = qa_dataset[idx].get_example(is_training=True, task_type="CAUSAL_LM")
-        # if len(prompt['prompt']) < 768 and len(prompt['prompt']) > 512:
-        #     print(prompt)
-        prompt = qa_dataset[idx]
-        print(prompt)
+    # for i in range(0, 20):
+    #     idx = random.randint(0, 5000)
+    #     # prompt = qa_dataset[idx].get_example(is_training=True, task_type="CAUSAL_LM")
+    #     # if len(prompt['prompt']) < 768 and len(prompt['prompt']) > 512:
+    #     #     print(prompt)
+    #     prompt = qa_dataset[idx]
+    #     print(prompt)
 
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
