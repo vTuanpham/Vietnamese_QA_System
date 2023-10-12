@@ -61,13 +61,22 @@ class AdvanceQa(Dataset):
                                                                                do_generative_eval=do_generative_eval)
                             # Check if config data exceeds maximum length or not,
                             # This check is for DataCollatorForCompletionOnlyLM
-                            if split == 'train' and task_type == 'CAUSAL_LM':
+                            if task_type == 'CAUSAL_LM':
                                 config_data_tokenzied = tokenizer(config_data['prompt'])
                                 if len(config_data_tokenzied['input_ids']) > max_seq_length:
                                     warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
                                                  f"max seq length")
                                     num_examples_each_file += 1
+                                    del config_data_tokenzied
                                     continue
+                                if do_perplexity_eval:
+                                    config_data_tokenzied = tokenizer(config_data['perplexity'])
+                                    if len(config_data_tokenzied['input_ids']) > max_seq_length:
+                                        warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
+                                                      f"max seq length")
+                                        num_examples_each_file += 1
+                                        del config_data_tokenzied
+                                        continue
                         except KeyError as e:
                             raise f"Missing keys to fill for {config_data} in item {idx} in {file_name}" \
                                   f"Error message: {e}"
@@ -172,13 +181,13 @@ class QADataloader:
         if not max_eval_generative_samples:
             self.max_eval_generative_samples = max_eval_samples
         else:
-            assert max_eval_samples > max_eval_generative_samples, "Max eval generative samples can't be larger than the" \
+            assert max_eval_samples >= max_eval_generative_samples, "Max eval generative samples can't be larger than the" \
                                                                    "whole eval dataset"
             self.max_eval_generative_samples = max_eval_generative_samples
         if not max_eval_perplexity_samples:
             self.max_eval_perplexity_samples = max_eval_samples
         else:
-            assert max_eval_samples > max_eval_perplexity_samples, "Max eval perplexity samples can't be larger than the" \
+            assert max_eval_samples >= max_eval_perplexity_samples, "Max eval perplexity samples can't be larger than the" \
                                                                    "whole eval dataset"
             self.max_eval_perplexity_samples = max_eval_perplexity_samples
         self.max_predict_samples = max_predict_samples
@@ -298,7 +307,7 @@ class QADataloader:
         for index in random.sample(range(len(dataset)), 3):
             print(f"Sample {index} of the training set: {dataset[index]}.")
 
-        return dataset # Parse from pytorch dataset to hugging face dataset ecosystem
+        return dataset
 
     def preprocess_data(self, dataset, split=None, perplexity_eval: bool=False):
         with self.accelerator.main_process_first():
@@ -487,8 +496,8 @@ if __name__ == "__main__":
                        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
                         ],
         "val_file": [
-            # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
-            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"
+            r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+            # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json"
         ],
         "train_batch_size": 8,
         "perplexity_eval_batch_size": 6,
@@ -533,9 +542,9 @@ if __name__ == "__main__":
         print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
         if idx == 10: break
 
-    for idx, data in enumerate(iter(qa_dataloader_instance['eval']['perplexity_eval'])):
-        print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
-        labels = data['labels'].cpu().numpy()
-        labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
-        if idx == 2: break
+    # for idx, data in enumerate(iter(qa_dataloader_instance['eval']['perplexity_eval'])):
+    #     print("\n"+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+    #     labels = data['labels'].cpu().numpy()
+    #     labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
+    #     print("\n"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+    #     if idx == 20: break

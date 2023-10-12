@@ -268,7 +268,7 @@ def train(training_args):
     better_transformer = training_args.better_transformer
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
-    optim_name = training_args.Optim_name
+    optim_name = training_args.optim_name
     model_dtype = training_args.model_dtype
     perplexity_eval = training_args.do_perplexity_eval
     generative_eval = training_args.do_generative_eval
@@ -276,10 +276,10 @@ def train(training_args):
     print_model_key = training_args.print_model_key
 
     top_k = training_args.top_k
-    no_sample = training_args.no_sample
+    do_sample = training_args.do_sample
     no_repeat_ngram_size = training_args.no_repeat_ngram_size
     num_beams = training_args.num_beams
-    no_early_stopping = training_args.no_early_stopping
+    early_stopping = training_args.early_stopping
     max_time = training_args.max_time
     penalty_alpha = training_args.penalty_alpha
     repetition_penalty = training_args.repetition_penalty
@@ -302,6 +302,9 @@ def train(training_args):
     use_flash_attention_2 = training_args.use_flash_attention_2
     max_eval_generative_samples = training_args.max_eval_generative_samples
     max_eval_perplexity_samples = training_args.max_eval_perplexity_samples
+    lora_bias = training_args.lora_bias
+    modules_to_save = training_args.modules_to_save
+    warmup_steps = training_args.warmup_steps
 
     set_seed(seed)
 
@@ -372,27 +375,28 @@ def train(training_args):
         r=lora_r, lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         target_modules=target_modules,
-        bias="lora_only"
+        bias=lora_bias,
+        modules_to_save=modules_to_save
     )
 
     if not use_default_gen_config:
         try:
             generation_config, unused_config = GenerationConfig.from_pretrained(
-                model_name_or_path, top_k=top_k, do_sample=not no_sample, return_unused_kwargs=True,
-                no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=not no_early_stopping,
+                model_name_or_path, top_k=top_k, do_sample=do_sample, return_unused_kwargs=True,
+                no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=early_stopping,
                 max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
                 truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
-                max_new_tokens=max_new_tokens, top_p=top_p
+                max_new_tokens=max_new_tokens, top_p=top_p, use_cache=True, low_memory=True
             )
             if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
         except Exception as e:
             warnings.warn(f"The model {model_name_or_path} does not have a generation config")
             warnings.warn(f"Error message: {e}")
             generation_config = GenerationConfig.from_dict(config_dict={
-                "top_k": top_k, "do_sample": not no_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": not no_early_stopping,
+                "top_k": top_k, "do_sample": do_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": early_stopping,
                 "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
-                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty, "min_new_tokens": 20,
-                "max_length": max_length, "truncation": not no_truncation, "top_p": top_p
+                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
+                "max_length": max_length, "truncation": not no_truncation, "top_p": top_p, "use_cache": True, "low_memory": True
             })
     else:
         generation_config = GenerationConfig.from_dict(config_dict={"min_new_tokens": 20,
@@ -400,16 +404,10 @@ def train(training_args):
                                                                     "max_time": max_time})
     accelerator.print(f"Model generation config: {generation_config}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path,
-                                              use_fast=True,
-                                              trust_remote_code=True,
-                                              truncation=True,
-                                              padding_side="left" if task_type == "CAUSAL_LM" else "right")
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
     qa_dataloader = QADataloader(**dataloader_args)
     qa_dataloader_instance = qa_dataloader.__call__()
+
+    tokenizer = qa_dataloader.tokenizer
 
     accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
     for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
@@ -532,6 +530,10 @@ def train(training_args):
     if print_model_key:
         accelerator.print(base_model)
 
+    # TODO: For cast weights to fp32
+    if modules_to_save and use_8bit or use_4bit:
+        pass
+
     # model = torch.compile(model, mode="max-autotune")
     adapter = PeftModel(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
@@ -561,7 +563,7 @@ def train(training_args):
     # lr scheduler
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer=optimizer,
-        num_warmup_steps=20,
+        num_warmup_steps=warmup_steps,
         num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
     )
 
@@ -584,7 +586,6 @@ def train(training_args):
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
-                    # loss = Variable(loss, requires_grad = True)
                     total_loss += loss.detach().float()
                     accelerator.backward(loss)
                     optimizer.step()
@@ -593,14 +594,6 @@ def train(training_args):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    # # Assuming outputs contains the model predictions
-                    # predicted_ids = outputs["logits"].argmax(dim=-1)  # Assuming logits represent class probabilities
-                    #
-                    # # Convert the predicted token IDs to text
-                    # predicted_text = qa_dataloader.tokenizer.decode(predicted_ids[0], skip_special_tokens=True)
-                    #
-                    # # Print the predicted text
-                    # accelerator.print("Predicted Text:", predicted_text)
                     accelerator.print(total_loss / step)
                     del loss, outputs, batch
 
@@ -671,42 +664,6 @@ def train(training_args):
                 )
 
             inference_model.eval()
-            eval_preds = []
-            if generative_eval:
-                with TorchTracemalloc() as tracemalloc:
-                    for idx, batch in enumerate(tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
-                        # Pass dummy batch to avoid caffe error
-                        if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                            inference_model(**batch)
-                        batch = {k: v for k, v in batch.items() if k != "labels"}
-                        with torch.no_grad():
-                            outputs = inference_model.generate(
-                                **batch, generation_config=generation_config,
-                                synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                pad_token_id=tokenizer.pad_token_id
-                            )  # synced_gpus=True for DS-stage 3
-                        outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                        preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
-
-                # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
-                accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
-                accelerator.print("GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
-                accelerator.print("GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
-                accelerator.print(
-                    "GPU Total Peak Memory consumed during the eval (max): {}".format(
-                        tracemalloc.peaked + b2mb(tracemalloc.begin)
-                    )
-                )
-
-                accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
-                accelerator.print("CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
-                accelerator.print("CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
-                accelerator.print(
-                    "CPU Total Peak Memory consumed during the eval (max): {}".format(
-                        tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
-                    )
-                )
             if task_type == "SEQ_2_SEQ_LM" and generative_eval:
                 correct = 0
                 total = 0
@@ -753,6 +710,48 @@ def train(training_args):
             elif task_type == "CAUSAL_LM":
                 torch.backends.cuda.enable_mem_efficient_sdp(False)
                 torch.backends.cuda.enable_flash_sdp(False)
+                eval_preds = []
+                if generative_eval:
+                    with TorchTracemalloc() as tracemalloc:
+                        for idx, batch in enumerate(
+                                tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                            # Pass dummy batch to avoid caffe error
+                            if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                inference_model(**batch)
+                            batch = {k: v for k, v in batch.items() if k != "labels"}
+                            with torch.no_grad():
+                                outputs = inference_model.generate(
+                                    **batch, generation_config=generation_config,
+                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                    pad_token_id=tokenizer.pad_token_id
+                                )  # synced_gpus=True for DS-stage 3
+                            outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                            preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                            eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+
+                    # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
+                    accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
+                    accelerator.print(
+                        "GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
+                    accelerator.print(
+                        "GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
+                    accelerator.print(
+                        "GPU Total Peak Memory consumed during the eval (max): {}".format(
+                            tracemalloc.peaked + b2mb(tracemalloc.begin)
+                        )
+                    )
+
+                    accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
+                    accelerator.print(
+                        "CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
+                    accelerator.print(
+                        "CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
+                    accelerator.print(
+                        "CPU Total Peak Memory consumed during the eval (max): {}".format(
+                            tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+                        )
+                    )
+
                 perplexity = 0
                 if perplexity_eval:
                     inference_model.eval()

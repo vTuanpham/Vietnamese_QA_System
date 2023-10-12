@@ -31,6 +31,9 @@ def parse_arguments():
     peft_group.add_argument("--lora_dropout", type=float, default=None, help="Dropout probability for LoRA layers")
     peft_group.add_argument("--target_modules", nargs='+', type=str,  default=None,
                             help="The target modules for lora")
+    peft_group.add_argument("--lora_bias", type=str, default="none", help="Bias type for Lora")
+    peft_group.add_argument("--modules_to_save", nargs='+', type=str, default=None, help="List of modules apart from "
+                                                                                         "LoRA layers to be set as trainable and saved in the final checkpoint.")
 
     bitsandbytes_group = parser.add_argument_group("Bitsandbytes arguments")
     bitsandbytes_group.add_argument("--use_4bit", action='store_true', help="Activate 4-bit precision base model loading")
@@ -42,9 +45,10 @@ def parse_arguments():
     bitsandbytes_group.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
 
     training_group = parser.add_argument_group("Training configs group")
-    training_group.add_argument("--Optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
+    training_group.add_argument("--optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
     training_group.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     training_group.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    training_group.add_argument("--warmup_steps", type=int, default=20, help="Num warmup steps")
     training_group.add_argument("--num_epochs", type=int, default=5, help="Number of epochs")
     training_group.add_argument("--seed", type=int, default=43, help="Random seed")
     training_group.add_argument("--do_test", action='store_true', help="Flag to perform testing")
@@ -70,10 +74,10 @@ def parse_arguments():
     dataloader_group.add_argument("--model_max_length", type=int, default=1024, help="The model maximum length")
     dataloader_group.add_argument("--context_length", type=int, default=768, help="The model maximum context length")
     dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[
-        # r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
+        r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
         r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
         r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
-        # r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
+        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
     ], help="List of training files")
 
     dataloader_group.add_argument("--val_file", nargs='+', type=str, default=[
@@ -101,18 +105,18 @@ def parse_arguments():
     dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=500, help="Max evaluation examples for perplexity evaluation")
 
     generation_group = parser.add_argument_group("Generation Arguments")
-    generation_group.add_argument("--top_k", type=int, default=5, help="Top-k value ")
-    generation_group.add_argument("--top_p", type=float, default=0.7, help="Top-p value")
-    generation_group.add_argument("--no_sample", action="store_true", help="Enable sampling (default: True)")
-    generation_group.add_argument("--no_repeat_ngram_size", type=int, default=3, help="No repeat n-gram size (default: 3)")
-    generation_group.add_argument("--num_beams", type=int, default=5, help="Number of beams (default: 5)")
-    generation_group.add_argument("--no_early_stopping", action="store_true", help="Enable early stopping (default: True)")
+    generation_group.add_argument("--top_k", type=int, default=50, help="Top-k value ")
+    generation_group.add_argument("--top_p", type=float, default=1.0, help="Top-p value")
+    generation_group.add_argument("--do_sample", action="store_true", help="Enable sampling (default: True)")
+    generation_group.add_argument("--no_repeat_ngram_size", type=int, default=0, help="No repeat n-gram size (default: 3)")
+    generation_group.add_argument("--num_beams", type=int, default=1, help="Number of beams (default: 5)")
+    generation_group.add_argument("--early_stopping", action="store_true", help="Enable early stopping (default: True)")
     generation_group.add_argument("--max_time", type=int, default=None, help="Max time")
-    generation_group.add_argument("--penalty_alpha", type=float, default=1.2, help="Penalty alpha (default: 1.2)")
-    generation_group.add_argument("--repetition_penalty", type=float, default=2.5, help="Repetition penalty (default: 2.5)")
-    generation_group.add_argument("--temperature", type=float, default=0.6, help="Temperature (default: 1.5)")
+    generation_group.add_argument("--penalty_alpha", type=float, default=None, help="Penalty alpha (default: 1.2)")
+    generation_group.add_argument("--repetition_penalty", type=float, default=1.0, help="Repetition penalty (default: 2.5)")
+    generation_group.add_argument("--temperature", type=float, default=1.0, help="Temperature (default: 1.5)")
     generation_group.add_argument("--no_truncation", action="store_true", help="Enable truncation (default: True)")
-    generation_group.add_argument("--encoder_repetition_penalty", type=float, default=2.0, help="Encoder repetition penalty (default: 2.0)")
+    generation_group.add_argument("--encoder_repetition_penalty", type=float, default=1.0, help="Encoder repetition penalty (default: 2.0)")
     generation_group.add_argument("--max_length", type=int, default=1024, help="Max length (default: 1024)")
     generation_group.add_argument("--max_new_tokens", type=int, default=None, help="Max new tokens ")
     generation_group.add_argument("--deep_speed_inf", action="store_true", help="Enable deep speed inference")
