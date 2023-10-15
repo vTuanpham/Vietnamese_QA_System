@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 import re
@@ -29,6 +30,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
 from src.utils import force_super_call, ForceBaseCallMeta, timeit
+from src.data.features.filters import have_code
 
 
 class DataParser(metaclass=ForceBaseCallMeta):
@@ -43,7 +45,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
                  target_fields: List[str] = ['question_text', 'doc_tokens', 'orig_answer_texts'],
                  target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
                  max_example_per_thread: int = 100,
-                 large_chunks_threshold: int = 20000) -> None:
+                 large_chunks_threshold: int = 20000,
+                 no_translated_code: bool = False) -> None:
         self.data_read = None
         self.converted_data = None
         self.file_path = file_path
@@ -62,7 +65,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
 
         if self.do_translate:
             self.target_fields = target_fields
-
+            self.no_translated_code = no_translated_code
             assert max_example_per_thread < large_chunks_threshold, " Large chunks threshold can't be smaller than max_example per thread!"
             self.max_example_per_thread = max_example_per_thread
             self.large_chunks_threshold = large_chunks_threshold
@@ -97,6 +100,24 @@ class DataParser(metaclass=ForceBaseCallMeta):
                                 f"you can adjust the fields in the 'src/data/configs/'" \
                                 f"  or fill in the missing field"
         return True
+
+    def post_translate_validate(self) -> None:
+        validated_translate_data = []
+        # Note: This validates will override the original self.converted_data
+        for idx, example in enumerate(tqdm(self.converted_data, desc="Validating data for translation:")):
+            for key in self.target_fields:
+                if self.no_translated_code:
+                    contain_code, score, found_elements = have_code(example[key])
+                    if contain_code:
+                        warnings.warn(f"Example {idx} with ID: {example['qas_id']} contain code with score {score},"
+                                      " This example will not be included in the translation data.\n"
+                                      f"Detected word: {found_elements}")
+                        break
+                    elif key == self.target_fields[-1]:
+                        validated_translate_data.append(example)
+
+        print(f"Total data left after filtering for translation: {len(validated_translate_data)}")
+        self.converted_data = validated_translate_data
 
     @staticmethod
     def id_generator(size=6, chars=string.ascii_uppercase + string.digits) -> str:
@@ -318,7 +339,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
             for idx, data in enumerate(tqdm(self.converted_data, desc="Writing data to file")):
                 if self.validate(self.converted_data[idx].keys(), self.target_config):
                     # validated_data.append(data)
-                    jfile.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
+                    jfile.write(json.dumps(data, ensure_ascii=False) + "\n")
             # json.dump(validated_data, jfile, ensure_ascii=False, indent=4)
             print(f"\n Total line printed: {idx + 1}")
 
@@ -327,6 +348,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
             files.download(output_path)
 
         if self.do_translate:
+            self.post_translate_validate()
             self.translate_converted()
             assert self.converted_data_translated is not None, "Converted data haven't been translated yet!"
             output_translated_path = os.path.join(self.output_dir, f"{self.parser_type}_translated.json")
@@ -335,7 +357,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                 translated_data = []
                 for idx, data in enumerate(tqdm(self.converted_data_translated, desc="Writing translated data to file")):
                     # translated_data.append(data)
-                    jfile.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
+                    jfile.write(json.dumps(data, ensure_ascii=False) + "\n")
                 # json.dump(translated_data, jfile, ensure_ascii=False, indent=4)
                 print(f"\n Total line printed: {idx + 1}")
 

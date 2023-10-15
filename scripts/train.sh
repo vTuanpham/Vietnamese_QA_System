@@ -1,24 +1,26 @@
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultMultiGPU.yaml" train.py \
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultSingleGPU.yaml" train.py \
+        --train_file "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" \
+        --val_file "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" \
         --lora_r 64 \
-        --dataset_name "Instruction_tune_5k_e3_en" \
+        --dataset_name "Instruction_tune_8k_e3_en-vi" \
         --model_name_or_path EleutherAI/pythia-410m-deduped-v0 \
-        --max_train_samples 2000 \
-        --max_eval_samples 400 \
+        --max_train_samples 8000 \
+        --max_eval_samples 500 \
         --train_batch_size 2 \
-        --num_epochs  2 \
+        --num_epochs  3 \
         --seed 53 \
         --lr 5e-4 \
-        --warmup_steps 80 \
+        --warmup_steps 120 \
         --model_dtype bfloat16 \
-        --lora_dropout 0.05 \
-        --weight_decay 0.2 \
+        --lora_dropout 0.02 \
+        --weight_decay 0.15 \
         --model_type CAUSAL_LM \
         --minimum_free_spaces 1 \
-        --gradient_accumulation_steps 8 \
+        --gradient_accumulation_steps 9 \
         --generative_eval_batch_size 3 \
         --max_eval_generative_samples 10 \
         --perplexity_eval_batch_size 1 \
-        --max_eval_perplexity_samples 399 \
+        --max_eval_perplexity_samples 499 \
         --lora_alpha 32 \
         --optim_name PagedAdamW8bit \
         --enable_model_offload \

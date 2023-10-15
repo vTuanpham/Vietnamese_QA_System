@@ -99,7 +99,7 @@ def b2mb(x):
 
 def load_adapter(base_model_name: str, peft_adapter: PeftModel,
                adapter_save_path: str, adapter_name: str, main_process: bool,
-               model_type: str="CAUSAL_LM", better_transformer: bool=False,
+               model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
                shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
 
     peft_adapter.save_pretrained(adapter_save_path,
@@ -110,7 +110,7 @@ def load_adapter(base_model_name: str, peft_adapter: PeftModel,
     offload_config = {
         # "device_map": "auto",
         # "offload_folder": "offload_inf",
-        "torch_dtype": torch.bfloat16,
+        "torch_dtype": model_dtype,
         "use_cache": True,
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
@@ -629,6 +629,7 @@ def train(training_args):
                                              adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                              main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                              model_type=task_type,
+                                             model_dtype=model_dtype,
                                              better_transformer=better_transformer,
                                              shard_model=shard_model_merge,
                                              max_memory={0: "0.3GB"},
@@ -641,10 +642,10 @@ def train(training_args):
                 inference_model = deepcopy(adapter)
 
             if deep_speed_inf:
-                world_size = int(os.getenv('WORLD_SIZE', '1'))
+                world_size = int(os.getenv('WORLD_SIZE', str(torch.cuda.device_count())))
                 os.environ["RANK"] = "0"
                 os.environ["LOCAL_RANK"] = "0"
-                os.environ["WORLD_SIZE"] = "1"
+                os.environ["WORLD_SIZE"] = str(torch.cuda.device_count())
 
                 # The injection_policy shows two things:
                 #   1. which layer module we need to add Tensor-Parallelism
