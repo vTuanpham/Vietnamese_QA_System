@@ -3,7 +3,7 @@ import warnings
 import json
 from ast import literal_eval
 
-from transformers import models
+from transformers import models, SchedulerType
 
 import deepspeed.module_inject as module_inject
 
@@ -48,6 +48,9 @@ def parse_arguments():
     training_group.add_argument("--optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
     training_group.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     training_group.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    training_group.add_argument("--lr_sheduler_name", type=SchedulerType, default="linear",
+                                choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
+                                help="The scheduler type to use.")
     training_group.add_argument("--warmup_steps", type=int, default=20, help="Num warmup steps")
     training_group.add_argument("--num_epochs", type=int, default=5, help="Number of epochs")
     training_group.add_argument("--seed", type=int, default=43, help="Random seed")
@@ -60,6 +63,7 @@ def parse_arguments():
     training_group.add_argument("--enable_model_offload", action='store_true', help="Enable model offload")
     training_group.add_argument("--minimum_free_spaces", type=int, default=1, help="Minimum free spaces to keep in GB")
     training_group.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
+    training_group.add_argument("--resume_from_checkpoint")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
@@ -79,6 +83,8 @@ def parse_arguments():
         r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
         r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
     ], help="List of training files")
+    dataloader_group.add_argument("--each_train_file_percentage", nargs='+', type=int, default=None,
+                                  help="The percentage weight of each train files")
 
     dataloader_group.add_argument("--val_file", nargs='+', type=str, default=[
         r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70kFormated.json",
@@ -131,6 +137,12 @@ def parse_arguments():
     args = parser.parse_args()
 
     # Sanity check
+    if args.each_train_file_percentage:
+        assert len(args.each_train_file_percentage) == len(args.train_file), "The each_train_file_percentage length must be " \
+                                                                             "equal to the numbers of files in the train_file"
+        assert sum(args.each_train_file_percentage) == 100, "The each_train_file_percentage arguments must be a list of int" \
+                                                            "that add up to 100%"
+
     if args.use_8bit and args.use_4bit:
         raise "Can't use 8bit and 4bit quantization at the same time"
 

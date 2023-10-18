@@ -25,8 +25,6 @@ except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import deepspeed
 import torch.nn as nn
-from torch.autograd import Variable
-
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -39,9 +37,7 @@ import datasets, transformers
 from transformers import \
     (AutoModelForCausalLM,
      AutoModelForSeq2SeqLM,
-     AutoTokenizer,
-     get_linear_schedule_with_warmup,
-     get_cosine_schedule_with_warmup,
+     get_scheduler,
      set_seed,
      BitsAndBytesConfig,
      GenerationConfig,
@@ -58,38 +54,6 @@ from src.data.configs import AdvanceInstructSample, AdvanceQAExample
 
 
 logger = get_logger(__name__)
-
-
-def levenshtein_distance(str1, str2):
-    # TC: O(N^2)
-    # SC: O(N^2)
-    if str1 == str2:
-        return 0
-    num_rows = len(str1) + 1
-    num_cols = len(str2) + 1
-    dp_matrix = np.empty((num_rows, num_cols))
-    dp_matrix[0, :] = range(num_cols)
-    dp_matrix[:, 0] = range(num_rows)
-
-    for i in range(1, num_rows):
-        for j in range(1, num_cols):
-            if str1[i - 1] == str2[j - 1]:
-                dp_matrix[i, j] = dp_matrix[i - 1, j - 1]
-            else:
-                dp_matrix[i, j] = min(dp_matrix[i - 1, j - 1], dp_matrix[i - 1, j], dp_matrix[i, j - 1]) + 1
-
-    return dp_matrix[num_rows - 1, num_cols - 1]
-
-
-def get_closest_label(eval_pred, classes):
-    min_id = sys.maxsize
-    min_edit_distance = sys.maxsize
-    for i, class_label in enumerate(classes):
-        edit_distance = levenshtein_distance(eval_pred.strip(), class_label)
-        if edit_distance < min_edit_distance:
-            min_id = i
-            min_edit_distance = edit_distance
-    return classes[min_id]
 
 
 # Converting Bytes to Megabytes
@@ -210,7 +174,8 @@ class TorchTracemalloc:
 
 
 def train(training_args):
-    accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps)
+    accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
+                              project_dir="./")
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
@@ -246,6 +211,8 @@ def train(training_args):
     use_8bit = training_args.use_8bit
 
     model_name_or_path = training_args.model_name_or_path
+    gradient_accumulation_steps = training_args.gradient_accumulation_steps
+    lr_sheduler_name = training_args.lr_sheduler_name
     dataset_name = training_args.dataset_name
     train_batch_size = training_args.train_batch_size
     perplexity_eval_batch_size = training_args.perplexity_eval_batch_size
@@ -319,6 +286,7 @@ def train(training_args):
         "text_column": text_column,
         "target_column": label_column,
         "train_file": training_args.train_file,
+        "each_train_file_percentage": training_args.each_train_file_percentage,
         "val_file": training_args.val_file,
         "test_file": training_args.test_file,
         "train_batch_size": train_batch_size,
@@ -465,15 +433,7 @@ def train(training_args):
     if task_type == "CAUSAL_LM":
         if not shard_model:
             base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
-                                                              quantization_config=quant_config,
-                                                              trust_remote_code=True,
-                                                              load_in_8bit=use_8bit,
-                                                              load_in_4bit=use_4bit,
-                                                              torch_dtype=model_dtype,
-                                                              config=config,
-                                                              # use_flash_attention_2=use_flash_attention_2,
-                                                              **offload_config
-                                                        )
+                                                              **full_model_config)
         else:
             base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
@@ -481,15 +441,7 @@ def train(training_args):
     elif task_type == "SEQ_2_SEQ_LM":
         if not shard_model:
             base_model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path,
-                                                              quantization_config=quant_config,
-                                                              trust_remote_code=True,
-                                                              load_in_8bit=use_8bit,
-                                                              load_in_4bit=use_4bit,
-                                                              torch_dtype=model_dtype,
-                                                              config=config,
-                                                              # use_flash_attention_2=use_flash_attention_2,
-                                                              **offload_config
-                                                            )
+                                                              **full_model_config)
         else:
             base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
@@ -535,7 +487,7 @@ def train(training_args):
         pass
 
     # model = torch.compile(model, mode="max-autotune")
-    adapter = PeftModel(base_model, peft_config=peft_config, adapter_name=dataset_name)
+    adapter = get_peft_model(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     adapter.print_trainable_parameters()
 
@@ -560,23 +512,48 @@ def train(training_args):
     optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters, lr=lr)
     accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
 
+    num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
+    max_train_steps = num_epochs * num_update_steps_per_epoch
     # lr scheduler
-    lr_scheduler = get_cosine_schedule_with_warmup(
+    lr_scheduler = get_scheduler(
+        lr_sheduler_name,
         optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=(len(qa_dataloader_instance['train']) * num_epochs),
+        num_warmup_steps=warmup_steps * gradient_accumulation_steps,
+        num_training_steps=max_train_steps * gradient_accumulation_steps,
     )
 
-    adapter, train_dataloader, perplexity_eval_dataloader, generative_eval_dataloader, \
-    test_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        adapter, qa_dataloader_instance['train'], qa_dataloader_instance['eval']['perplexity_eval'],
-        qa_dataloader_instance['eval']['generative_eval'],
-        qa_dataloader_instance['test'], optimizer, lr_scheduler
+    adapter, train_dataloader, optimizer, lr_scheduler = accelerator.prepare(
+        adapter, qa_dataloader_instance['train'], optimizer, lr_scheduler
     )
 
-    is_ds_zero_3 = False
-    if getattr(accelerator.state, "deepspeed_plugin", None):
-        is_ds_zero_3 = accelerator.state.deepspeed_plugin.zero_stage == 3
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
+    num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
+    max_train_steps = num_epochs * num_update_steps_per_epoch
+    # Afterwards we recalculate our number of training epochs
+    num_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
+
+    # On TPU, the tie weights in our model have been disconnected, so we need to restore the ties.
+    if accelerator.distributed_type == DistributedType.TPU:
+        adapter.tie_weights()
+
+    if do_eval:
+        if perplexity_eval:
+            perplexity_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['perplexity_eval'])
+        if generative_eval:
+            generative_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['generative_eval'])
+    else:
+        logger.info("\nEvaluation turn off for this session")
+
+    if do_test:
+        test_dataloader = accelerator.prepare(qa_dataloader_instance['test'])
+    else:
+        logger.info("\nTest turn off for this session")
+
+    # Register the LR scheduler
+    accelerator.register_for_checkpointing(lr_scheduler)
+
+    # # Save the starting state
+    # accelerator.save_state()
 
     for epoch in tqdm(range(num_epochs), desc="Training progress"):
         with TorchTracemalloc() as tracemalloc:
@@ -596,6 +573,15 @@ def train(training_args):
                 if accelerator.sync_gradients:
                     accelerator.print(total_loss / step)
                     del loss, outputs, batch
+
+                # if isinstance(checkpointing_steps, int):
+                #     if completed_steps % checkpointing_steps == 0:
+                #         output_dir = f"step_{completed_steps}"
+                #         if args.output_dir is not None:
+                #             output_dir = os.path.join(args.output_dir, output_dir)
+                #         accelerator.save_state(output_dir)
+                # if completed_steps >= args.max_train_steps:
+                #     break
 
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
@@ -666,28 +652,61 @@ def train(training_args):
 
             inference_model.eval()
             if task_type == "SEQ_2_SEQ_LM" and generative_eval:
-                correct = 0
-                total = 0
-                assert len(eval_preds) == len(
-                    qa_dataloader.dataset['eval']
-                ), f"{len(eval_preds)} != {len(qa_dataloader.dataset['eval'])}"
-                for pred, true in zip(eval_preds, qa_dataloader.dataset['eval']):
-                    if pred.strip() == true[label_column].strip():
-                        correct += 1
-                    total += 1
-                accuracy = correct / total * 100
-                accelerator.print(f"{accuracy=}")
+                torch.backends.cuda.enable_mem_efficient_sdp(False)
+                torch.backends.cuda.enable_flash_sdp(False)
+                eval_preds = []
+                if generative_eval:
+                    with TorchTracemalloc() as tracemalloc:
+                        with torch.no_grad():
+                            for idx, batch in enumerate(
+                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                # Pass dummy batch to avoid caffe error
+                                if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                    inference_model(**batch)
+                                batch = {k: v for k, v in batch.items() if k != "labels"}
+                                outputs = inference_model.generate(
+                                    **batch, generation_config=generation_config,
+                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                    pad_token_id=tokenizer.pad_token_id
+                                )  # synced_gpus=True for Distributed training
+                                outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                                preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+
+                    # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
+                    accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
+                    accelerator.print(
+                        "GPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.used))
+                    accelerator.print(
+                        "GPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.peaked))
+                    accelerator.print(
+                        "GPU Total Peak Memory consumed during the eval (max): {}".format(
+                            tracemalloc.peaked + b2mb(tracemalloc.begin)
+                        )
+                    )
+
+                    accelerator.print("CPU Memory before entering the eval : {}".format(b2mb(tracemalloc.cpu_begin)))
+                    accelerator.print(
+                        "CPU Memory consumed at the end of the eval (end-begin): {}".format(tracemalloc.cpu_used))
+                    accelerator.print(
+                        "CPU Peak Memory consumed during the eval (max-begin): {}".format(tracemalloc.cpu_peaked))
+                    accelerator.print(
+                        "CPU Total Peak Memory consumed during the eval (max): {}".format(
+                            tracemalloc.cpu_peaked + b2mb(tracemalloc.cpu_begin)
+                        )
+                    )
+
                 try:
                     cur_dir = os.getcwd()
                     if '/' in model_name_or_path:
                         model_name = model_name_or_path.replace("/", "-")
                     else:
                         model_name = model_name_or_path
-                    log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
+                    log_path = os.path.join(cur_dir, f"src/models/runs/logs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
                     with open(log_path, 'w') as log_file:
                         # Log info
                         log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
-                        log_file.write(f"\n       Accuracy: {accuracy}\n")
+                        # log_file.write(f"\n       Accuracy: {accuracy}\n")
                         for i in range(0, 10):
                             idx = random.randint(0, len(eval_preds)-1)
                             accelerator.print(f"        Question: {qa_dataloader.dataset['eval'][idx][text_column]}\n")
@@ -714,21 +733,22 @@ def train(training_args):
                 eval_preds = []
                 if generative_eval:
                     with TorchTracemalloc() as tracemalloc:
-                        for idx, batch in enumerate(
-                                tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
-                            # Pass dummy batch to avoid caffe error
-                            if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                                inference_model(**batch)
-                            batch = {k: v for k, v in batch.items() if k != "labels"}
-                            with torch.no_grad():
-                                outputs = inference_model.generate(
-                                    **batch, generation_config=generation_config,
-                                    synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                    pad_token_id=tokenizer.pad_token_id
-                                )  # synced_gpus=True for DS-stage 3
-                            outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                            preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                            eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                        with torch.no_grad():
+                            for idx, batch in enumerate(
+                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                # Pass dummy batch to avoid caffe error
+                                if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                    inference_model(**batch)
+                                batch = {k: v for k, v in batch.items() if k != "labels"}
+                                with torch.no_grad():
+                                    outputs = inference_model.generate(
+                                        **batch, generation_config=generation_config,
+                                        synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
+                                        pad_token_id=tokenizer.pad_token_id
+                                    )  # synced_gpus=True for Distributed training
+                                outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                                preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -781,7 +801,7 @@ def train(training_args):
                             model_name = model_name_or_path.replace("/", "-")
                         else:
                             model_name = model_name_or_path
-                        log_path = os.path.join(cur_dir, f"src/models/runs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
+                        log_path = os.path.join(cur_dir, f"src/models/runs/logs/log_dir_e{epoch}_{model_name}_{cur_time}.txt")
                         with open(log_path, 'w') as log_file:
                             # Log info
                             log_file.write(f"\n       {epoch=}: {train_ppl=} {train_epoch_loss=}\n")
@@ -812,35 +832,6 @@ def train(training_args):
             accelerator.print("Removing inference model offload_inf...")
             shutil.rmtree('offload_inf') if os.path.exists("offload_inf") else None
             gc.collect()
-
-    if do_test:
-        model.eval()
-        test_preds = []
-        for _, batch in enumerate(tqdm(test_dataloader)):
-            batch = {k: v for k, v in batch.items() if k != "labels"}
-            with torch.no_grad():
-                outputs = accelerator.unwrap_model(model).generate(
-                    **batch, synced_gpus=is_ds_zero_3
-                )  # synced_gpus=True for DS-stage 3
-            outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-            preds = accelerator.gather(outputs).detach().cpu().numpy()
-            test_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
-
-        test_preds_cleaned = []
-        for _, pred in enumerate(test_preds):
-            test_preds_cleaned.append(get_closest_label(pred, classes))
-
-        test_df = qa_dataloader_instance["test"].to_pandas()
-        assert len(test_preds_cleaned) == len(test_df), f"{len(test_preds_cleaned)} != {len(test_df)}"
-        test_df[label_column] = test_preds_cleaned
-        test_df["text_labels_orig"] = test_preds
-        accelerator.print(test_df[[text_column, label_column]].sample(20))
-
-        pred_df = test_df[["ID", label_column]]
-        pred_df.columns = ["ID", "Label"]
-
-        os.makedirs(f"data/{dataset_name}", exist_ok=True)
-        pred_df.to_csv(f"data/{dataset_name}/predictions.csv", index=False)
 
     accelerator.wait_for_everyone()
     # if better_transformer:

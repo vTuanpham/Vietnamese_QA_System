@@ -14,14 +14,18 @@ from src.data.features import DataParser
 from src.data.configs import AdvanceInstructSample, QA_TEMPLATE
 
 
-PARSER_TYPE = "WizardLM_70k"
+PARSER_TYPE = "WizardLM_20k_Filtered"
 
 
 class WizardLM70k(DataParser):
     def __init__(self, file_path: str, output_path: str):
         super().__init__(file_path, output_path,
                          parser_type=PARSER_TYPE,
-                         do_translate=False)
+                         do_translate=True,
+                         no_translated_code=True,
+                         max_example_per_thread=300,
+                         large_chunks_threshold=3000
+                         )
         self.target_config = AdvanceInstructSample
         self.target_fields = ['question_text', 'orig_answer_texts']
 
@@ -47,14 +51,14 @@ class WizardLM70k(DataParser):
                 data_dict['answer_lengths'] = None
                 data_converted.append(data_dict)
 
-        self.converted_data = data_converted
+        self.converted_data = data_converted[:20000]
 
         pass
 
 
 if __name__ == '__main__':
-    alpaca_cleaned_parser = AlpacaCleaned(r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\dummy.txt",
-                                          r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k")
-    alpaca_cleaned_parser.read()
-    alpaca_cleaned_parser.convert()
-    alpaca_cleaned_parser.save
+    wizardlm_parser = WizardLM70k(r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/dummy.txt",
+                                  r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k")
+    wizardlm_parser.read()
+    wizardlm_parser.convert()
+    wizardlm_parser.save

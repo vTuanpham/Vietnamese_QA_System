@@ -16,7 +16,7 @@ def code_likelihood_score(text) -> Tuple[int, list]:
         'true', 'false', 'NULL', 'nil', 'void', 'var', 'let', 'const', 'val',
         'try', 'catch', 'finally', 'raise', 'lambda', 'self', 'super',
         'instanceof', 'enum', 'switch', 'case', 'break', 'default', 'console', 'python',
-        'csharp' , 'c', 'js', 'javascript', 'pytorch', 'php', 'asm', '//', '#', 'writeline', 'readline', '```',
+        'csharp' , 'c', 'js', 'javascript', 'java', 'pytorch', 'php', 'asm', '//', '#', 'writeline', 'readline', '```',
         'json', 'html', 'css', 'lxml', 'xml', '<', '>', '<html>', '<body>', '<li>', '</html>', '</body>', '</ul>', '<ul>', '</li>',
         '[', ']', '<text>', '</', '<source>', '</source>' , '</text>', 'sql', 'select', 'from' , 'table', 'union', 'group' ,
         'string', '()', 'Hello, world!', 'C# code', 'python code', 'import re', 'object', 'ABC', 'Ruby', 'regex', 'println'

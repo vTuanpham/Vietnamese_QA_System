@@ -34,20 +34,26 @@ class AdvanceQa(Dataset):
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
                  get_example: bool = True, split: str='train', num_examples: int = 100000,
                  do_perplexity_eval: bool = False, do_generative_eval: bool = False,
-                 tokenizer: AutoTokenizer = None, max_seq_length: int = 1024):
-        num_examples_each = math.floor(num_examples/len(json_file_paths))
+                 tokenizer: AutoTokenizer = None, max_seq_length: int = 1024,
+                 percentage_weights: List[int]=None):
         assert task_type, "Please specified task type"
+
+        # Uniform weights for all files if percentage weights is None
+        if not percentage_weights:
+            percentage_weights = [math.floor(100/len(json_file_paths)) for _ in range(len(json_file_paths))]
+        # num_examples_each = math.floor(num_examples/len(json_file_paths))
+
         self.task_type = task_type
         self.full_json_data = []
         self.config_type = config_type
         self.get_example = get_example
-        for json_path in tqdm(json_file_paths, desc=f"Loading {split} data"):
+        for json_path, percentage_weight in tqdm(zip(json_file_paths, percentage_weights), desc=f"Loading {split} data"):
             assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
-            num_examples_each_file = num_examples_each
+            num_examples_each_file = math.floor(num_examples * (percentage_weight/100))
             try:
                 file_name = os.path.basename(json_path)
                 extension = json_path.split(".")[-1]
-                print(f"Loading {num_examples_each_file} from {file_name}...")
+                print(f"Loading {num_examples_each_file} examples with percentage of {percentage_weight} from {file_name}...")
                 iterable_json_data = load_dataset(extension, data_files=json_path,
                                                   streaming=True, keep_in_memory=False)
                 for idx, data in enumerate(iter(iterable_json_data['train'])):
@@ -110,6 +116,7 @@ class QADataloader:
                  target_column: str,
                  task_type: str,
                  train_file: Union[str, List[str]],
+                 each_train_file_percentage: List[int]=None,
                  val_file: Optional[Union[str, List[str]]]=None,
                  test_file: Optional[Union[str, List[str]]]=None,
                  train_batch_size: int = 8,
@@ -164,6 +171,7 @@ class QADataloader:
                           f"Please consider enable if the size of your dataset is smaller than 1000k or your setup"
                           f"have lowram\n")
         self.train_file = train_file
+        self.each_train_file_percentage = each_train_file_percentage
         self.val_file = val_file
         self.test_file = test_file
         self.train_batch_size = train_batch_size
@@ -281,6 +289,7 @@ class QADataloader:
         """
         if num_example:
             dataset = AdvanceQa(json_file_paths=data_files,
+                                percentage_weights=self.each_train_file_percentage,
                                 num_examples=num_example,
                                 config_type=self.config_type,
                                 task_type=self.task_type,
@@ -293,6 +302,7 @@ class QADataloader:
                                 )
         else:
             dataset = AdvanceQa(json_file_paths=data_files,
+                                percentage_weights=self.each_train_file_percentage,
                                 config_type=self.config_type,
                                 task_type=self.task_type,
                                 split=split,
