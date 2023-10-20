@@ -2,28 +2,28 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --train_file "src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" "src/data/features/final_storge_converted/vilm-lima-vi/vilm_lima-vi.json"\
         --each_train_file_percentage 50 30 10 10 \
         --val_file "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" "src/data/features/final_storge_converted/vilm-lima-vi/vilm_lima-vi.json"\
-        --lora_r 128 \
+        --lora_r 64 \
         --dataset_name "Instruction_tune_8k_e3_en-vi" \
         --model_name_or_path EleutherAI/gpt-neo-125m \
-        --max_train_samples 10000 \
+        --max_train_samples 5000 \
         --max_eval_samples 500 \
         --train_batch_size 1 \
         --num_epochs  3 \
         --seed 55 \
-        --lr 2e-4 \
-        --warmup_steps 10 \
+        --lr 1e-4 \
+        --warmup_steps 0 \
         --model_dtype bfloat16 \
-        --lora_dropout 0.02 \
-        --weight_decay 0.2 \
+        --lora_dropout 0.05 \
+        --weight_decay 0.15 \
         --model_type CAUSAL_LM \
         --minimum_free_spaces 1 \
-        --gradient_accumulation_steps 12 \
-        --generative_eval_batch_size 3 \
-        --max_eval_generative_samples 10 \
+        --gradient_accumulation_steps 64 \
+        --generative_eval_batch_size 1 \
+        --max_eval_generative_samples 20 \
         --perplexity_eval_batch_size 1 \
         --max_eval_perplexity_samples 499 \
-        --lora_alpha 128 \
-        --optim_name PagedAdamW8bit \
+        --lora_alpha 64 \
+        --optim_name PagedLion8bit \
         --enable_model_offload \
         --gradient_checkpointing \
         --do_eval \
@@ -39,7 +39,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --response_template " %%%%%%% Response:" \
         --print_model_key \
         --deep_speed_inf \
-        --lr_sheduler_name linear \
+        --lr_sheduler_name cosine \
         --auto_kernel_injection
 #        --repetition_penalty 1.2 \
 #        --no_repeat_ngram_size 3 \

@@ -41,7 +41,6 @@ class AdvanceQa(Dataset):
         # Uniform weights for all files if percentage weights is None
         if not percentage_weights:
             percentage_weights = [math.floor(100/len(json_file_paths)) for _ in range(len(json_file_paths))]
-        # num_examples_each = math.floor(num_examples/len(json_file_paths))
 
         self.task_type = task_type
         self.full_json_data = []
@@ -68,13 +67,14 @@ class AdvanceQa(Dataset):
                             # Check if config data exceeds maximum length or not,
                             # This check is for DataCollatorForCompletionOnlyLM
                             if task_type == 'CAUSAL_LM':
-                                config_data_tokenzied = tokenizer(config_data['prompt'])
-                                if len(config_data_tokenzied['input_ids']) > max_seq_length:
-                                    warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
-                                                 f"max seq length")
-                                    num_examples_each_file += 1
-                                    del config_data_tokenzied
-                                    continue
+                                if split == 'train' or do_generative_eval:
+                                    config_data_tokenzied = tokenizer(config_data['prompt'])
+                                    if len(config_data_tokenzied['input_ids']) > max_seq_length:
+                                        warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
+                                                     f"max seq length")
+                                        num_examples_each_file += 1
+                                        del config_data_tokenzied
+                                        continue
                                 if do_perplexity_eval:
                                     config_data_tokenzied = tokenizer(config_data['perplexity'])
                                     if len(config_data_tokenzied['input_ids']) > max_seq_length:
