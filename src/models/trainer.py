@@ -5,7 +5,6 @@ import os
 import random
 import shutil
 import logging
-import subprocess
 from copy import deepcopy
 import warnings
 
@@ -61,10 +60,10 @@ def b2mb(x):
     return int(x / 2**20)
 
 
-def load_adapter(base_model_name: str, peft_adapter: PeftModel,
-               adapter_save_path: str, adapter_name: str, main_process: bool,
-               model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
-               shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
+def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
+                  adapter_save_path: str, adapter_name: str, main_process: bool,
+                  model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
+                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
 
     peft_adapter.save_pretrained(adapter_save_path,
                                  save_adapter=True,
@@ -89,7 +88,7 @@ def load_adapter(base_model_name: str, peft_adapter: PeftModel,
                                                               )
         else:
             base_model = poor_man_llm_load(base_model_name, model_type=model_type,
-                                           model_dtype=torch.bfloat16, max_shard_size=max_shard_size,
+                                           model_dtype=model_dtype, max_shard_size=max_shard_size,
                                            additional_kwargs=offload_config)
     elif model_type == "SEQ_2_SEQ_LM":
         if not shard_model:
@@ -98,8 +97,15 @@ def load_adapter(base_model_name: str, peft_adapter: PeftModel,
                                                                )
         else:
             base_model = poor_man_llm_load(base_model_name, model_type=model_type,
-                                           model_dtype=torch.bfloat16, max_shard_size=max_shard_size,
+                                           model_dtype=model_dtype, max_shard_size=max_shard_size,
                                            additional_kwargs=offload_config)
+
+    if getattr(base_model, "quantization_method", None) == "gptq":
+        warnings.warn(f"The model {base_model_name} is gptq quantized and cannot be merged to LORA layers.\n"
+                      f"Returning the original adapter...")
+        del base_model
+        gc.collect()
+        return peft_adapter
 
     if better_transformer:
         try:
@@ -111,19 +117,15 @@ def load_adapter(base_model_name: str, peft_adapter: PeftModel,
             warnings.warn(f"Error message: {e}")
             pass
 
-    # model_to_merge = PeftModel.from_pretrained(base_model,
-    #                                            adapter_path_file,
-    #                                            device_map="auto",
-    #                                            torch_dtype=torch.bfloat16,
-    #                                            )
-    #
-    # merged_model = model_to_merge.merge_and_unload(progressbar=True)
-    base_model.load_adapter(adapter_path_file)
-    base_model.enable_adapters()
-    # del base_model, peft_adapter, model_to_merge
+    model_to_merge = PeftModel.from_pretrained(base_model,
+                                               adapter_path_file,
+                                               device_map="auto",
+                                               )
+    merged_model = model_to_merge.merge_and_unload(progressbar=True)
+    del base_model, peft_adapter, model_to_merge
     gc.collect()
 
-    return base_model
+    return merged_model
 
 
 # This context manager is used to track the peak memory usage of the process
@@ -609,17 +611,22 @@ def train(training_args):
         if do_eval:
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
             if merge_weight_eval:
-                accelerator.print(f"Merging model for faster inference...")
-                inference_model = load_adapter(model_name_or_path,
-                                             peft_adapter=adapter,
-                                             adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
-                                             main_process=accelerator.is_main_process, adapter_name=dataset_name,
-                                             model_type=task_type,
-                                             model_dtype=model_dtype,
-                                             better_transformer=better_transformer,
-                                             shard_model=shard_model_merge,
-                                             max_memory={0: "0.3GB"},
-                                             max_shard_size=max_model_shard_size)
+                if not getattr(base_model, "quantization_method", None) == "gptq":
+                    accelerator.print(f"Merging model for faster inference...")
+                    inference_model = merge_adapter(model_name_or_path,
+                                                    peft_adapter=adapter,
+                                                    adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
+                                                    main_process=accelerator.is_main_process, adapter_name=dataset_name,
+                                                    model_type=task_type,
+                                                    model_dtype=model_dtype,
+                                                    better_transformer=better_transformer,
+                                                    shard_model=shard_model_merge,
+                                                    max_memory={0: "0.3GB"},
+                                                    max_shard_size=max_model_shard_size)
+                else:
+                    warnings.warn(
+                        f"The model {model_name_or_path} is gptq quantized and cannot be merged to LORA layers.\n"
+                        f"Skipping merge_weight_eval...")
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
                 # deepcopy since using torch.autocast which will auto cast if there is a mismatch between lora adatper
@@ -646,7 +653,6 @@ def train(training_args):
                 inference_model = deepspeed.init_inference(
                     accelerator.unwrap_model(inference_model),
                     mp_size=world_size,
-                    # dtype=torch.half,
                     **injection_config
                 )
 
