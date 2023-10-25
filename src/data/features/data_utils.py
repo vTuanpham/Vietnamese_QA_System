@@ -22,9 +22,5 @@ def reformat_data(data_paths: List[str], added_string: str="Formated"):
 
 
 if __name__=="__main__":
-    reformat_data([r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca.json",
-                   r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\Open-Orca_OpenOrca\OpenOrca_translated.json",
-                   r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k.json",
-                   r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\WizardLM_WizardLM_evol_instruct_70k\WizardLM_70k_translated.json",
-                   r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned.json",
-                   r"C:\Users\Tuan Pham\Desktop\Study\SelfStudy\venv2\Vietnamese_QA_System\src\data\features\final_storge_converted\yahma_alpaca-cleaned\AlpacaCleaned_translated.json"])
+    reformat_data([r"src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k.json",
+                   r"src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json"])
