@@ -459,7 +459,9 @@ def train(training_args):
         dtype=model_dtype
     )
 
-    base_model = dispatch_model(base_model, device_map=device_map)
+    base_model = dispatch_model(base_model,
+                                device_map=device_map,
+                                offload_dir="offload")
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
