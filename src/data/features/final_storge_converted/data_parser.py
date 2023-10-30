@@ -42,8 +42,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
                  do_ctx_augmentation: bool = False,
                  batch_size: int = 12,
                  translate_via: str = 'ggapi',
-                 target_fields: List[str] = ['question_text', 'doc_tokens', 'orig_answer_texts'],
-                 target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample,
+                 target_fields: List[str] = ['question_text', 'orig_answer_texts'],
+                 target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceInstructSample,
                  max_example_per_thread: int = 100,
                  large_chunks_threshold: int = 20000,
                  no_translated_code: bool = False) -> None:
@@ -115,6 +115,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
                         break
                     elif key == self.target_fields[-1]:
                         validated_translate_data.append(example)
+                else:
+                    if key == self.target_fields[-1]: validated_translate_data.append(example)
 
         print(f"Total data left after filtering for translation: {len(validated_translate_data)}")
         self.converted_data = validated_translate_data

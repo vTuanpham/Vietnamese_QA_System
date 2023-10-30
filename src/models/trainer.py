@@ -422,8 +422,9 @@ def train(training_args):
         "load_in_4bit": use_4bit,
         "torch_dtype": model_dtype,
         "config": config,
-        # "use_flash_attention_2": use_flash_attention_2
     }
+
+    if use_flash_attention_2: full_model_config["use_flash_attention_2"] = True
 
     if "gpt2" in model_name_or_path:
         full_model_config["scale_attn_by_inverse_layer_idx"] = True
@@ -551,11 +552,12 @@ def train(training_args):
     else:
         logger.info("\nTest turn off for this session")
 
-    # Register the LR scheduler
-    accelerator.register_for_checkpointing(lr_scheduler)
+    if training_args.checkpointing_steps:
+        # Register the LR scheduler
+        accelerator.register_for_checkpointing(lr_scheduler)
 
-    # # Save the starting state
-    # accelerator.save_state()
+        # Save the starting state
+        accelerator.save_state()
 
     for epoch in tqdm(range(num_epochs), desc="Training progress"):
         with TorchTracemalloc() as tracemalloc:

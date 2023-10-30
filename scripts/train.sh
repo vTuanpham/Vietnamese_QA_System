@@ -1,12 +1,12 @@
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/config_defaultSingleGPU.yaml" train.py \
         --train_file "src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json" "src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_20k_Filtered_translated.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" "src/data/features/final_storge_converted/vilm-lima-vi/vilm_lima-vi.json" "src/data/features/final_storge_converted/mt_eng_vietnamese/MTEngVietnamese.json"\
-        --each_train_file_percentage 30 30 10 10 20 \
-        --val_file "src/data/features/final_storge_converted/mt_eng_vietnamese/MTEngVietnamese.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" "src/data/features/final_storge_converted/vilm-lima-vi/vilm_lima-vi.json" "src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_20k_Filtered_translated.json"\
+        --each_train_file_percentage 30 30 15 5 20 \
+        --val_file "src/data/features/final_storge_converted/mt_eng_vietnamese/MTEngVietnamese.json" "src/data/features/final_storge_converted/databricks-dolly-15k/databricks_dolly15k_translated.json" "src/data/features/final_storge_converted/vilm-lima-vi/vilm_lima-vi.json" "src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_20k_Filtered_translated.json" \
         --lora_r 32 \
         --dataset_name "Instruction_tune_8k_e3_en-vi" \
         --model_name_or_path EleutherAI/gpt-neo-125m \
-        --max_train_samples 10000 \
-        --max_eval_samples 500 \
+        --max_train_samples 20000 \
+        --max_eval_samples 1000 \
         --train_batch_size 1 \
         --num_epochs  3 \
         --seed 56 \
@@ -17,11 +17,11 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --weight_decay 0.2 \
         --model_type CAUSAL_LM \
         --minimum_free_spaces 1 \
-        --gradient_accumulation_steps 16 \
+        --gradient_accumulation_steps 128 \
         --generative_eval_batch_size 1 \
-        --max_eval_generative_samples 120 \
+        --max_eval_generative_samples 200 \
         --perplexity_eval_batch_size 1 \
-        --max_eval_perplexity_samples 499 \
+        --max_eval_perplexity_samples 999 \
         --lora_alpha 8 \
         --optim_name PagedAdamW8bit \
         --enable_model_offload \

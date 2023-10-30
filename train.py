@@ -64,6 +64,8 @@ def parse_arguments():
     training_group.add_argument("--minimum_free_spaces", type=int, default=1, help="Minimum free spaces to keep in GB")
     training_group.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
     training_group.add_argument("--resume_from_checkpoint")
+    training_group.add_argument("--checkpointing_steps", type=str, default=None, help="How often should we save"
+                                                                                      "state for resume")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
