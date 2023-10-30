@@ -24,6 +24,9 @@ def parse_arguments():
     model_group.add_argument("--use_flash_attention_2", action="store_true", help="Enable flash attention 2 or not"
                                                                              "More info: https://huggingface.co/docs/transformers/perf_infer_gpu_one")
     model_group.add_argument("--better_transformer", action='store_true', help="Enable flash attention")
+    model_group.add_argument("--no_split_module_classes", nargs='+', type=str, default=None,
+                             help="A list of layer class names that should never be split across device "
+                                  "(for instance any layer that has a residual connection).")
 
     peft_group = parser.add_argument_group("Parameters efficient arguments")
     peft_group.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")

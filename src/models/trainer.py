@@ -25,7 +25,7 @@ except Exception:
 import deepspeed
 import torch.nn as nn
 
-from accelerate import Accelerator
+from accelerate import Accelerator, infer_auto_device_map, dispatch_model
 from accelerate.logging import get_logger
 from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import DistributedType
@@ -274,6 +274,7 @@ def train(training_args):
     lora_bias = training_args.lora_bias
     modules_to_save = training_args.modules_to_save
     warmup_steps = training_args.warmup_steps
+    no_split_module_classes = training_args.no_split_module_classes
 
     set_seed(seed)
 
@@ -450,6 +451,15 @@ def train(training_args):
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
                                            additional_kwargs=full_model_config)
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
+
+    device_map = infer_auto_device_map(
+        base_model,
+        max_memory=max_memory,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype
+    )
+
+    base_model = dispatch_model(base_model, device_map=device_map)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
