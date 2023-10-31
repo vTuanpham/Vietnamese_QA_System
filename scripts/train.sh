@@ -5,7 +5,9 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --lora_r 32 \
         --dataset_name "Instruction_tune_8k_e3_en-vi" \
         --model_name_or_path EleutherAI/gpt-neo-125m \
-        --max_train_samples 20000 \
+        --shard_model \
+        --max_model_shard_size 200MB \
+        --max_train_samples 1000 \
         --max_eval_samples 1000 \
         --train_batch_size 1 \
         --num_epochs  3 \

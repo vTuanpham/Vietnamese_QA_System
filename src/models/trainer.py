@@ -7,6 +7,7 @@ import shutil
 import logging
 from copy import deepcopy
 import warnings
+from typing import List
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import sys
@@ -63,7 +64,8 @@ def b2mb(x):
 def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
                   adapter_save_path: str, adapter_name: str, main_process: bool,
                   model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
-                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
+                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
+                  no_split_module_classes: List[str]=None):
 
     peft_adapter.save_pretrained(adapter_save_path,
                                  save_adapter=True,
@@ -71,8 +73,8 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
-        # "device_map": "auto",
-        # "offload_folder": "offload_inf",
+        "device_map": "auto",
+        "offload_folder": "offload_inf",
         "torch_dtype": model_dtype,
         "use_cache": True,
         "offload_state_dict": True,
@@ -117,10 +119,22 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
             warnings.warn(f"Error message: {e}")
             pass
 
+    device_map = infer_auto_device_map(
+        base_model,
+        max_memory=max_memory,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype
+    )
+
+    base_model = dispatch_model(base_model,
+                                device_map=device_map,
+                                offload_dir="offload_inf")
+
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                device_map="auto",
                                                )
+
     merged_model = model_to_merge.merge_and_unload(progressbar=True)
     del base_model, peft_adapter, model_to_merge
     gc.collect()
@@ -636,7 +650,8 @@ def train(training_args):
                                                     better_transformer=better_transformer,
                                                     shard_model=shard_model_merge,
                                                     max_memory={0: "0.3GB"},
-                                                    max_shard_size=max_model_shard_size)
+                                                    max_shard_size=max_model_shard_size,
+                                                    no_split_module_classes=no_split_module_classes)
                 else:
                     warnings.warn(
                         f"The model {model_name_or_path} is gptq quantized and cannot be merged to LORA layers.\n"
