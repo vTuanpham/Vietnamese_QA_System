@@ -658,10 +658,7 @@ def train(training_args):
                         f"Skipping merge_weight_eval...")
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
-                # deepcopy since using torch.autocast which will auto cast if there is a mismatch between lora adatper
-                # and the base model dtype, deepcopy ensure that any modified inference_model dtype will not affect
-                # the base model and adapter dtype
-                inference_model = deepcopy(adapter)
+                inference_model = adapter
 
             if deep_speed_inf:
                 world_size = int(os.getenv('WORLD_SIZE', str(torch.cuda.device_count())))
