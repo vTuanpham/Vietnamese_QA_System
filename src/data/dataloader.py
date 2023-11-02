@@ -1,5 +1,4 @@
 import gc
-import logging
 import os
 import math
 import random
@@ -12,6 +11,7 @@ from accelerate import Accelerator
 sys.path.insert(0, r'./')
 
 from tqdm.auto import tqdm
+from tqdm.contrib import tzip
 from typing import Optional, List, Union, Set, Any, Dict
 
 import numpy as np
@@ -46,9 +46,14 @@ class AdvanceQa(Dataset):
         self.full_json_data = []
         self.config_type = config_type
         self.get_example = get_example
-        for json_path, percentage_weight in tqdm(zip(json_file_paths, percentage_weights), desc=f"Loading {split} data"):
+        for json_path, percentage_weight in tzip(json_file_paths, percentage_weights, desc=f"Loading {split} data"):
             assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
             num_examples_each_file = math.floor(num_examples * (percentage_weight/100))
+            loading_bar_desc = f"Loading data from {os.path.basename(json_path)} for split {split}"
+            loading_bar = tqdm(total=num_examples_each_file,
+                               colour="green",
+                               desc=loading_bar_desc)
+            total_skipped = 0
             try:
                 file_name = os.path.basename(json_path)
                 extension = json_path.split(".")[-1]
@@ -70,16 +75,16 @@ class AdvanceQa(Dataset):
                                 if split == 'train' or do_generative_eval:
                                     config_data_tokenzied = tokenizer(config_data['prompt'])
                                     if len(config_data_tokenzied['input_ids']) > max_seq_length:
-                                        warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
-                                                     f"max seq length")
+                                        total_skipped += 1
+                                        loading_bar.desc = f"{loading_bar_desc} (Total skipped {total_skipped})"
                                         num_examples_each_file += 1
                                         del config_data_tokenzied
                                         continue
                                 if do_perplexity_eval:
                                     config_data_tokenzied = tokenizer(config_data['perplexity'])
                                     if len(config_data_tokenzied['input_ids']) > max_seq_length:
-                                        warnings.warn(f"Example {idx} in {file_name} skipped due to length exceeded "
-                                                      f"max seq length")
+                                        total_skipped += 1
+                                        loading_bar.desc = f"{loading_bar_desc} (Total skipped {total_skipped})"
                                         num_examples_each_file += 1
                                         del config_data_tokenzied
                                         continue
@@ -89,7 +94,10 @@ class AdvanceQa(Dataset):
                     else:
                         config_data = data
                     self.full_json_data.append(config_data)
-                print(f"Finished loading from {file_name} with total loaded {len(self.full_json_data)} examples")
+                    loading_bar.update(1)
+                loading_bar.close()
+                print(f"\nFinished loading from {file_name} with total loaded {len(self.full_json_data)} examples\n"
+                      f"\nTotal data skipped: {total_skipped}\n")
                 del iterable_json_data,
                 gc.collect()
             except IOError as e:
@@ -238,7 +246,7 @@ class QADataloader:
                                           do_perplexity_eval=self.do_perplexity_eval,
                                           do_generative_eval=self.do_generative_eval)
             if self.do_generative_eval or self.task_type == "SEQ_2_SEQ_LM":
-                eval_dataset_input = random.sample(list(eval_dataset), self.max_eval_generative_samples)
+                eval_dataset_input = random.sample(list(eval_dataset), min(self.max_eval_generative_samples, len(eval_dataset)))
                 eval_dataset_input = eval_dataset_input if self.no_preprocess_data else self.preprocess_data(eval_dataset_input)
                 dataloaders['eval']['generative_eval'] = self.get_dataloader(eval_dataset_input,
                                                                              batch_size=self.generative_eval_batch_size)

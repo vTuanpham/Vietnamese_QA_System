@@ -5,7 +5,6 @@ import os
 import random
 import shutil
 import logging
-from copy import deepcopy
 import warnings
 from typing import List
 
@@ -25,11 +24,12 @@ except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import deepspeed
 import torch.nn as nn
+from torch.cuda.amp import autocast
 
-from accelerate import Accelerator, infer_auto_device_map, dispatch_model
+from accelerate import Accelerator, dispatch_model
 from accelerate.logging import get_logger
 from accelerate.utils.memory import find_executable_batch_size
-from accelerate.utils import DistributedType
+from accelerate.utils import DistributedType, release_memory, get_balanced_memory, infer_auto_device_map
 from accelerate.state import AcceleratorState
 
 from tqdm.auto import tqdm
@@ -63,8 +63,8 @@ def b2mb(x):
 
 def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
                   adapter_save_path: str, adapter_name: str, main_process: bool,
-                  model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
-                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
+                  model_type: str="CAUSAL_LM", model_dtype=None, shard_model: bool=False,
+                  max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
                   no_split_module_classes: List[str]=None):
 
     peft_adapter.save_pretrained(adapter_save_path,
@@ -109,15 +109,13 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
         gc.collect()
         return peft_adapter
 
-    if better_transformer:
-        try:
-            base_model = base_model.to_bettertransformer()
-        except Exception as e:
-            warnings.warn(f"This model type {base_model_name} is not yet "
-                          f"support for BetterTransformer, please change model type if "
-                          f"you still want to use it.\n Continue running without it...")
-            warnings.warn(f"Error message: {e}")
-            pass
+    max_memory = get_balanced_memory(
+        base_model,
+        max_memory=None,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype,
+        low_zero=False,
+    )
 
     device_map = infer_auto_device_map(
         base_model,
@@ -126,13 +124,14 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
         dtype=model_dtype
     )
 
-    base_model = dispatch_model(base_model,
-                                device_map=device_map,
-                                offload_dir="offload_inf")
+    base_model = dispatch_model(base_model, device_map=device_map, offload_dir="offload_inf")
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                device_map="auto",
+                                               offload_folder="offload_inf",
+                                               torch_dtype=model_dtype,
+                                               max_memory=max_memory
                                                )
 
     merged_model = model_to_merge.merge_and_unload(progressbar=True)
@@ -248,7 +247,6 @@ def train(training_args):
     do_group_texts = training_args.do_group_texts
     model_max_length = training_args.model_max_length
     context_length = training_args.context_length
-    better_transformer = training_args.better_transformer
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
     optim_name = training_args.optim_name
@@ -289,6 +287,7 @@ def train(training_args):
     modules_to_save = training_args.modules_to_save
     warmup_steps = training_args.warmup_steps
     no_split_module_classes = training_args.no_split_module_classes
+    checkpointing_steps = training_args.checkpointing_steps
 
     set_seed(seed)
 
@@ -464,7 +463,18 @@ def train(training_args):
             base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
                                            additional_kwargs=full_model_config)
+
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
+
+    max_memory = get_balanced_memory(
+        base_model,
+        max_memory=None,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype,
+        low_zero=False,
+    )
+
+    accelerator.print(f"\nMax balance memory: {max_memory}\n")
 
     device_map = infer_auto_device_map(
         base_model,
@@ -473,9 +483,12 @@ def train(training_args):
         dtype=model_dtype
     )
 
+    accelerator.print(f"\nModel device map to dispatch: {device_map}\n")
+
     base_model = dispatch_model(base_model,
                                 device_map=device_map,
-                                offload_dir="offload")
+                                offload_dir="offload",
+                                )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -484,17 +497,6 @@ def train(training_args):
     accelerator.print(f"Tokenizer vocab size: {len(tokenizer)}")
     if len(tokenizer) > embedding_size:
         base_model.resize_token_embeddings(len(tokenizer))
-
-    if better_transformer:
-        try:
-            base_model = base_model.to_bettertransformer()
-        except Exception as e:
-            warnings.warn(f"This model type {model_name_or_path} is not yet "
-                          f"support for BetterTransformer, please change model type if "
-                          f"you still want to use it.\n Continue running without it...")
-            warnings.warn(f"Error message: {e}")
-            better_transformer = False
-            pass
 
     # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit or getattr(base_model, "quantization_method", None) == "gptq":
@@ -547,8 +549,8 @@ def train(training_args):
     lr_scheduler = get_scheduler(
         lr_sheduler_name,
         optimizer=optimizer,
-        num_warmup_steps=warmup_steps * gradient_accumulation_steps,
-        num_training_steps=max_train_steps * gradient_accumulation_steps,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=max_train_steps,
     )
 
     adapter, train_dataloader, optimizer, lr_scheduler = accelerator.prepare(
@@ -578,12 +580,14 @@ def train(training_args):
     else:
         logger.info("\nTest turn off for this session")
 
-    if training_args.checkpointing_steps:
+    completed_steps  = 0
+
+    if checkpointing_steps:
         # Register the LR scheduler
         accelerator.register_for_checkpointing(lr_scheduler)
 
         # Save the starting state
-        accelerator.save_state()
+        accelerator.save_state(output_dir="src/models/runs/checkpoints")
 
     for epoch in tqdm(range(num_epochs), desc="Training progress"):
         with TorchTracemalloc() as tracemalloc:
@@ -602,13 +606,13 @@ def train(training_args):
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     accelerator.print(total_loss / step)
+                    completed_steps += 1
                     del loss, outputs, batch
 
                 # if isinstance(checkpointing_steps, int):
                 #     if completed_steps % checkpointing_steps == 0:
                 #         output_dir = f"step_{completed_steps}"
-                #         if args.output_dir is not None:
-                #             output_dir = os.path.join(args.output_dir, output_dir)
+                #         output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
                 #         accelerator.save_state(output_dir)
                 # if completed_steps >= args.max_train_steps:
                 #     break
@@ -647,9 +651,8 @@ def train(training_args):
                                                     main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                                     model_type=task_type,
                                                     model_dtype=model_dtype,
-                                                    better_transformer=better_transformer,
                                                     shard_model=shard_model_merge,
-                                                    max_memory={0: "0.3GB"},
+                                                    max_memory=max_memory,
                                                     max_shard_size=max_model_shard_size,
                                                     no_split_module_classes=no_split_module_classes)
                 else:
@@ -684,8 +687,6 @@ def train(training_args):
 
             inference_model.eval()
             if task_type == "SEQ_2_SEQ_LM" and generative_eval:
-                torch.backends.cuda.enable_mem_efficient_sdp(False)
-                torch.backends.cuda.enable_flash_sdp(False)
                 eval_preds = []
                 if generative_eval:
                     with TorchTracemalloc() as tracemalloc:
@@ -760,27 +761,28 @@ def train(training_args):
                     pass
 
             elif task_type == "CAUSAL_LM":
-                torch.backends.cuda.enable_mem_efficient_sdp(False)
-                torch.backends.cuda.enable_flash_sdp(False)
                 eval_preds = []
                 if generative_eval:
                     with TorchTracemalloc() as tracemalloc:
                         with torch.no_grad():
-                            for idx, batch in enumerate(
-                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
-                                # Pass dummy batch to avoid caffe error
-                                if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                                    inference_model(**batch)
-                                batch = {k: v for k, v in batch.items() if k != "labels"}
-                                with torch.no_grad():
-                                    outputs = inference_model.generate(
-                                        **batch, generation_config=generation_config,
-                                        synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                        pad_token_id=tokenizer.pad_token_id
-                                    )  # synced_gpus=True for Distributed training
-                                outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                                preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                            with autocast():
+                                with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
+                                                                    enable_mem_efficient=False):
+                                    for idx, batch in enumerate(
+                                            tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                        # Pass dummy batch to avoid caffe error
+                                        if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                            inference_model(**batch)
+                                        batch = {k: v for k, v in batch.items() if k != "labels"}
+                                        with torch.no_grad():
+                                            outputs = inference_model.generate(
+                                                **batch, generation_config=generation_config,
+                                                synced_gpus=accelerator.distributed_type != DistributedType.NO,
+                                                pad_token_id=tokenizer.pad_token_id
+                                            )  # synced_gpus=True for Distributed training
+                                        outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                                        preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -866,8 +868,6 @@ def train(training_args):
             gc.collect()
 
     accelerator.wait_for_everyone()
-    # if better_transformer:
-    #     adapter = adapter.reverse_bettertransformer()
     adapter.save_pretrained(dataset_name)
     adapter.push_to_hub(
         "1TuanPham/"
