@@ -389,8 +389,9 @@ def train(training_args):
                                                                     "max_time": max_time})
     accelerator.print(f"Model generation config: {generation_config}")
 
-    qa_dataloader = QADataloader(**dataloader_args)
-    qa_dataloader_instance = qa_dataloader.__call__()
+    with accelerator.main_process_first():
+        qa_dataloader = QADataloader(**dataloader_args)
+        qa_dataloader_instance = qa_dataloader.__call__()
 
     tokenizer = qa_dataloader.tokenizer
 
