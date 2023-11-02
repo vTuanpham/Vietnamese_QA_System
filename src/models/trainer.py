@@ -47,6 +47,7 @@ from transformers.trainer_pt_utils import get_parameter_names
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
+from peft.utils.other import fsdp_auto_wrap_policy
 
 from src.data import QADataloader
 from src.models.model_utils import poor_man_llm_load
@@ -541,10 +542,10 @@ def train(training_args):
 
     accelerator.print(f"\nAdapter device map to dispatch: {device_map}\n")
 
-    base_model = dispatch_model(adapter,
-                                device_map=device_map,
-                                offload_dir="offload",
-                                )
+    adapter = dispatch_model(adapter,
+                             device_map=device_map,
+                             offload_dir="offload",
+                            )
 
     if print_model_key:
         accelerator.print(adapter)
@@ -577,33 +578,13 @@ def train(training_args):
         num_training_steps=max_train_steps,
     )
 
+    if getattr(accelerator.state, "fsdp_plugin", None) is not None:
+        accelerator.print(f"FSDP detected, using FSDP...")
+        accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(adapter)
+
     adapter, train_dataloader, optimizer, lr_scheduler = accelerator.prepare(
         adapter, qa_dataloader_instance['train'], optimizer, lr_scheduler
     )
-
-    max_memory = get_balanced_memory(
-        adapter,
-        max_memory=None,
-        no_split_module_classes=no_split_module_classes,
-        dtype=model_dtype,
-        low_zero=False,
-    )
-
-    accelerator.print(f"\nAdapter max balance memory: {max_memory}\n")
-
-    device_map = infer_auto_device_map(
-        adapter,
-        max_memory=max_memory,
-        no_split_module_classes=no_split_module_classes,
-        dtype=model_dtype
-    )
-
-    accelerator.print(f"\nAdapter device map to dispatch: {device_map}\n")
-
-    base_model = dispatch_model(adapter,
-                                device_map=device_map,
-                                offload_dir="offload",
-                                )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
