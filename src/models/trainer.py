@@ -522,6 +522,30 @@ def train(training_args):
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     adapter.print_trainable_parameters()
 
+    max_memory = get_balanced_memory(
+        adapter,
+        max_memory=None,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype,
+        low_zero=False,
+    )
+
+    accelerator.print(f"\nAdapter max balance memory: {max_memory}\n")
+
+    device_map = infer_auto_device_map(
+        adapter,
+        max_memory=max_memory,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype
+    )
+
+    accelerator.print(f"\nAdapter device map to dispatch: {device_map}\n")
+
+    base_model = dispatch_model(adapter,
+                                device_map=device_map,
+                                offload_dir="offload",
+                                )
+
     if print_model_key:
         accelerator.print(adapter)
 
