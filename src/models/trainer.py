@@ -71,11 +71,12 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
                   adapter_save_path: str, adapter_name: str, main_process: bool,
                   model_type: str="CAUSAL_LM", model_dtype=None, shard_model: bool=False,
                   max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
-                  no_split_module_classes: List[str]=None):
-
+                  no_split_module_classes: List[str]=None, accelerator=None):
     peft_adapter.save_pretrained(adapter_save_path,
-                                 save_adapter=True,
-                                 is_main_process=main_process)
+                                 is_main_process=accelerator.is_main_process,
+                                 save_function=accelerator.save,
+                                 state_dict=accelerator.get_state_dict(peft_adapter, unwrap=False),
+                                 )
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
@@ -697,8 +698,9 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             if merge_weight_eval:
                 if not getattr(base_model, "quantization_method", None) == "gptq":
                     accelerator.print(f"Merging model for faster inference...")
+                    accelerator.wait_for_everyone()
                     inference_model = merge_adapter(model_name_or_path,
-                                                    peft_adapter=adapter,
+                                                    peft_adapter=accelerator.unwrap_model(adapter),
                                                     adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                                     main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                                     model_type=task_type,
@@ -706,14 +708,16 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                                     shard_model=shard_model_merge,
                                                     max_memory=max_memory,
                                                     max_shard_size=max_model_shard_size,
-                                                    no_split_module_classes=no_split_module_classes)
+                                                    no_split_module_classes=no_split_module_classes,
+                                                    accelerator=accelerator)
                 else:
                     warnings.warn(
                         f"The model {model_name_or_path} is gptq quantized and cannot be merged to LORA layers.\n"
                         f"Skipping merge_weight_eval...")
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
-                inference_model = adapter
+                accelerator.wait_for_everyone()
+                inference_model = accelerator.unwrap_model(adapter)
 
             if deep_speed_inf:
                 world_size = int(os.getenv('WORLD_SIZE', str(torch.cuda.device_count())))
@@ -732,7 +736,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                 } if auto_kernel_injection or injection_policy else {}
 
                 inference_model = deepspeed.init_inference(
-                    accelerator.unwrap_model(inference_model),
+                    inference_model,
                     mp_size=world_size,
                     **injection_config
                 )
