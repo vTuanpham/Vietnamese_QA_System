@@ -13,7 +13,7 @@ fsdp_config:
   fsdp_sharding_strategy: 1
   fsdp_state_dict_type: FULL_STATE_DICT
   fsdp_transformer_layer_cls_to_wrap: LlamaDecoderLayer
-  fsdp_sync_module_states: false
+  fsdp_sync_module_states: true
   fsdp_use_orig_params: true
 gpu_ids: null
 machine_rank: 0
