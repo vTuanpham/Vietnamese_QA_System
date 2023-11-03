@@ -37,7 +37,7 @@ from accelerate.utils import \
      get_balanced_memory,
      infer_auto_device_map,
      DummyScheduler,
-     DummyOptim)
+     DummyOptim, is_xpu_available)
 from accelerate.state import AcceleratorState
 
 from tqdm.auto import tqdm
@@ -455,8 +455,16 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         modules_to_save=modules_to_save
     )
 
+    # Copy the model to each device
+    # Naive pipeline parallelism
+    device_map = (
+        {"": f"xpu:{accelerator.local_process_index}"}
+        if is_xpu_available()
+        else {"": accelerator.local_process_index}
+    ) if accelerator.distributed_type != DistributedType.NO else "auto"
+
     offload_config = {
-        "device_map": "auto",
+        "device_map": device_map,
         "offload_folder": "offload",
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
@@ -500,29 +508,30 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
 
-    # max_memory = get_balanced_memory(
-    #     base_model,
-    #     max_memory=None,
-    #     no_split_module_classes=no_split_module_classes,
-    #     dtype=model_dtype,
-    #     low_zero=False,
-    # )
-    #
-    # accelerator.print(f"\nMax balance memory: {max_memory}\n")
-    #
-    # device_map = infer_auto_device_map(
-    #     base_model,
-    #     max_memory=max_memory,
-    #     no_split_module_classes=no_split_module_classes,
-    #     dtype=model_dtype
-    # )
-    #
-    # accelerator.print(f"\nModel device map to dispatch: {device_map}\n")
-    #
-    # base_model = dispatch_model(base_model,
-    #                             device_map=device_map,
-    #                             offload_dir="offload",
-    #                             )
+    if accelerator.distributed_type == DistributedType.NO:
+        max_memory = get_balanced_memory(
+            base_model,
+            max_memory=None,
+            no_split_module_classes=no_split_module_classes,
+            dtype=model_dtype,
+            low_zero=False,
+        )
+
+        accelerator.print(f"\nMax balance memory: {max_memory}\n")
+
+        device_map = infer_auto_device_map(
+            base_model,
+            max_memory=max_memory,
+            no_split_module_classes=no_split_module_classes,
+            dtype=model_dtype
+        )
+
+        accelerator.print(f"\nModel device map to dispatch: {device_map}\n")
+
+        base_model = dispatch_model(base_model,
+                                    device_map=device_map,
+                                    offload_dir="offload",
+                                    )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -555,30 +564,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     adapter = get_peft_model(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     adapter.print_trainable_parameters()
-
-    # max_memory = get_balanced_memory(
-    #     adapter,
-    #     max_memory=None,
-    #     no_split_module_classes=no_split_module_classes,
-    #     dtype=model_dtype,
-    #     low_zero=False,
-    # )
-    #
-    # accelerator.print(f"\nAdapter max balance memory: {max_memory}\n")
-    #
-    # device_map = infer_auto_device_map(
-    #     adapter,
-    #     max_memory=max_memory,
-    #     no_split_module_classes=no_split_module_classes,
-    #     dtype=model_dtype
-    # )
-    #
-    # accelerator.print(f"\nAdapter device map to dispatch: {device_map}\n")
-    #
-    # adapter = dispatch_model(adapter,
-    #                          device_map=device_map,
-    #                          offload_dir="offload",
-    #                         )
 
     if print_model_key:
         accelerator.print(adapter)
