@@ -463,6 +463,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         else {"": accelerator.local_process_index}
     ) if accelerator.distributed_type != DistributedType.NO else "auto"
 
+    accelerator.print(f"\nModel device map: {device_map}\n")
+
     offload_config = {
         "device_map": device_map,
         "offload_folder": "offload",
@@ -630,16 +632,16 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         # Save the starting state
         accelerator.save_state(output_dir="src/models/runs/checkpoints")
 
-    progress_bar = tqdm(total=num_epochs, desc="Training progress",
-                        position=accelerator.process_index,
-                        colour="green")
+    progress_bar_epoch = tqdm(total=num_epochs, desc=f"Training progress on process {accelerator.process_index}",
+                              position=accelerator.process_index,
+                              colour="green")
 
     for epoch in range(num_epochs):
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
             for step, batch in enumerate(tqdm(train_dataloader,
-                                              desc=f"Training progress epoch {epoch}",
+                                              desc=f"Training progress epoch {epoch} on process {accelerator.process_index}",
                                               position=accelerator.process_index,
                                               colour="blue")):
                 with accelerator.accumulate(adapter):
@@ -657,7 +659,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     completed_steps += 1
                     del loss, outputs, batch
 
-        progress_bar.update(1)
+        progress_bar_epoch.update(1)
 
                 # if isinstance(checkpointing_steps, int):
                 #     if completed_steps % checkpointing_steps == 0:
@@ -743,7 +745,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                         with torch.no_grad():
                             for idx, batch in enumerate(
                                     tqdm(generative_eval_dataloader,
-                                         desc=f"Evaluating epoch {epoch} generative",
+                                         desc=f"Evaluating epoch {epoch} generative on process {accelerator.process_index}",
                                          position=accelerator.process_index,
                                          colour="blue")):
                                 # Pass dummy batch to avoid caffe error
@@ -823,7 +825,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                                                     enable_mem_efficient=False):
                                     for idx, batch in enumerate(
                                             tqdm(generative_eval_dataloader,
-                                                 desc=f"Evaluating epoch {epoch} generative",
+                                                 desc=f"Evaluating epoch {epoch} generative on process {accelerator.process_index}",
                                                  position=accelerator.process_index,
                                                  colour="blue")):
                                         # Pass dummy batch to avoid caffe error
