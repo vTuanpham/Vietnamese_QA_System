@@ -1,4 +1,3 @@
-import datetime
 import gc
 import math
 import os
@@ -6,9 +5,11 @@ import random
 import shutil
 import logging
 import warnings
+import datetime
 from typing import List
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TORCHELASTIC_ERROR_FILE"] = "src/models/runs/logs/ERROR_file.txt"
 import sys
 sys.path.insert(0,r'./')
 import psutil
@@ -25,6 +26,7 @@ except Exception:
 import deepspeed
 import torch.nn as nn
 from torch.cuda.amp import autocast
+from torch.distributed.elastic.multiprocessing.errors import record
 
 from accelerate import Accelerator, dispatch_model
 from accelerate.logging import get_logger
@@ -55,10 +57,7 @@ import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
 from peft.utils.other import fsdp_auto_wrap_policy
 
-from src.data import QADataloader
 from src.models.model_utils import poor_man_llm_load
-from src.data.configs import AdvanceInstructSample, AdvanceQAExample
-
 
 logger = get_logger(__name__)
 
@@ -265,7 +264,8 @@ class TorchTracemalloc:
         self.cpu_peaked = b2mb(self.cpu_peak - self.cpu_begin)
 
 
-def train(training_args):
+@record
+def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
                               project_dir="./")
     accelerator.print(f"{AcceleratorState()}")
@@ -306,9 +306,6 @@ def train(training_args):
     gradient_accumulation_steps = training_args.gradient_accumulation_steps
     lr_sheduler_name = training_args.lr_sheduler_name
     dataset_name = training_args.dataset_name
-    train_batch_size = training_args.train_batch_size
-    perplexity_eval_batch_size = training_args.perplexity_eval_batch_size
-    generative_eval_batch_size = training_args.generative_eval_batch_size
     text_column = training_args.text_column
     label_column = training_args.label_column
     lr = training_args.lr
@@ -320,9 +317,6 @@ def train(training_args):
     weight_decay = training_args.weight_decay
     target_modules = training_args.target_modules
     task_type = training_args.model_type
-    block_size = training_args.block_size
-    do_group_texts = training_args.do_group_texts
-    model_max_length = training_args.model_max_length
     context_length = training_args.context_length
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
@@ -345,7 +339,6 @@ def train(training_args):
     no_truncation = training_args.no_truncation
     encoder_repetition_penalty = training_args.encoder_repetition_penalty
     max_length = training_args.max_length
-    no_preprocess_data = training_args.no_preprocess_data
     max_new_tokens = training_args.max_new_tokens
     shard_model = training_args.shard_model
     max_model_shard_size = training_args.max_model_shard_size
@@ -355,11 +348,8 @@ def train(training_args):
     auto_kernel_injection = training_args.auto_kernel_injection
     use_default_gen_config = training_args.use_default_gen_config
     shard_model_merge = training_args.shard_model_merge
-    response_template = training_args.response_template
     minimum_free_spaces = training_args.minimum_free_spaces
     use_flash_attention_2 = training_args.use_flash_attention_2
-    max_eval_generative_samples = training_args.max_eval_generative_samples
-    max_eval_perplexity_samples = training_args.max_eval_perplexity_samples
     lora_bias = training_args.lora_bias
     modules_to_save = training_args.modules_to_save
     warmup_steps = training_args.warmup_steps
@@ -434,42 +424,6 @@ def train(training_args):
                                                                     "max_length": context_length,
                                                                     "max_time": max_time})
     accelerator.print(f"Model generation config: {generation_config}")
-
-    if accelerator.is_main_process:
-        dataloader_args = {
-            "accelerator": accelerator,
-            "model_name": model_name_or_path,
-            "text_column": text_column,
-            "target_column": label_column,
-            "train_file": training_args.train_file,
-            "each_train_file_percentage": training_args.each_train_file_percentage,
-            "val_file": training_args.val_file,
-            "test_file": training_args.test_file,
-            "train_batch_size": train_batch_size,
-            "perplexity_eval_batch_size": perplexity_eval_batch_size,
-            "generative_eval_batch_size": generative_eval_batch_size,
-            "seed": seed,
-            "max_train_samples": training_args.max_train_samples,
-            "max_eval_samples": training_args.max_eval_samples,
-            "max_predict_samples": training_args.max_predict_samples,
-            "config_type": AdvanceInstructSample,
-            "task_type": task_type,
-            "block_size": block_size,
-            "no_preprocess_data": no_preprocess_data,
-            "do_group_texts": do_group_texts,
-            "do_perplexity_eval": perplexity_eval,
-            "do_generative_eval": generative_eval,
-            "model_max_length": model_max_length,
-            "context_length": context_length,
-            "response_template": response_template,
-            "max_eval_generative_samples": max_eval_generative_samples,
-            "max_eval_perplexity_samples": max_eval_perplexity_samples
-        }
-
-        qa_dataloader = QADataloader(**dataloader_args)
-        qa_dataloader_instance = qa_dataloader.__call__()
-
-    accelerator.wait_for_everyone()
 
     tokenizer = qa_dataloader.tokenizer
 

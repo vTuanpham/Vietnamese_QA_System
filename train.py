@@ -7,6 +7,8 @@ from transformers import models, SchedulerType
 
 import deepspeed.module_inject as module_inject
 
+from src.data import QADataloader
+from src.data.configs import AdvanceInstructSample
 from src.models.trainer import train
 
 
@@ -203,4 +205,37 @@ def parse_arguments():
 
 if __name__=="__main__":
     args = parse_arguments()
-    train(args)
+
+    dataloader_args = {
+        "model_name": args.model_name_or_path,
+        "text_column": args.text_column,
+        "target_column": args.label_column,
+        "train_file": args.train_file,
+        "each_train_file_percentage": args.each_train_file_percentage,
+        "val_file": args.val_file,
+        "test_file": args.test_file,
+        "train_batch_size": args.train_batch_size,
+        "perplexity_eval_batch_size": args.perplexity_eval_batch_size,
+        "generative_eval_batch_size": args.generative_eval_batch_size,
+        "seed": args.seed,
+        "max_train_samples": args.max_train_samples,
+        "max_eval_samples": args.max_eval_samples,
+        "max_predict_samples": args.max_predict_samples,
+        "config_type": AdvanceInstructSample,
+        "task_type": args.model_type,
+        "block_size": args.block_size,
+        "no_preprocess_data": args.no_preprocess_data,
+        "do_group_texts": args.do_group_texts,
+        "do_perplexity_eval": args.do_perplexity_eval,
+        "do_generative_eval": args.do_generative_eval,
+        "model_max_length": args.model_max_length,
+        "context_length": args.context_length,
+        "response_template": args.response_template,
+        "max_eval_generative_samples": args.max_eval_generative_samples,
+        "max_eval_perplexity_samples": args.max_eval_perplexity_samples
+    }
+
+    qa_dataloader = QADataloader(**dataloader_args)
+    qa_dataloader_instance = qa_dataloader.__call__()
+
+    train(args, qa_dataloader, qa_dataloader_instance)

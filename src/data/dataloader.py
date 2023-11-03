@@ -34,7 +34,7 @@ class AdvanceQa(Dataset):
                  get_example: bool = True, split: str='train', num_examples: int = 100000,
                  do_perplexity_eval: bool = False, do_generative_eval: bool = False,
                  tokenizer: AutoTokenizer = None, max_seq_length: int = 1024,
-                 percentage_weights: List[int]=None, accelerator=None):
+                 percentage_weights: List[int]=None):
         assert task_type, "Please specified task type"
 
         # Uniform weights for all files if percentage weights is None
@@ -56,7 +56,7 @@ class AdvanceQa(Dataset):
             try:
                 file_name = os.path.basename(json_path)
                 extension = json_path.split(".")[-1]
-                accelerator.print(f"Loading {num_examples_each_file} examples with percentage of {percentage_weight} from {file_name}...")
+                print(f"Loading {num_examples_each_file} examples with percentage of {percentage_weight} from {file_name}...")
                 iterable_json_data = load_dataset(extension, data_files=json_path,
                                                   streaming=True, keep_in_memory=False)
                 for idx, data in enumerate(iter(iterable_json_data['train'])):
@@ -95,7 +95,7 @@ class AdvanceQa(Dataset):
                     self.full_json_data.append(config_data)
                     loading_bar.update(1)
                 loading_bar.close()
-                accelerator.print(f"\nFinished loading from {file_name} with total loaded {len(self.full_json_data)} examples\n"
+                print(f"\nFinished loading from {file_name} with total loaded {len(self.full_json_data)} examples\n"
                       f"\nTotal data skipped: {total_skipped}\n")
                 del iterable_json_data,
                 gc.collect()
@@ -117,7 +117,6 @@ class AdvanceQa(Dataset):
 
 class QADataloader:
     def __init__(self,
-                 accelerator,
                  model_name: str,
                  text_column: str,
                  target_column: str,
@@ -149,7 +148,6 @@ class QADataloader:
                  config_type: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceQAExample
                  ) -> None:
 
-        self.accelerator = accelerator
         self.model_max_length = model_max_length
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
@@ -259,7 +257,7 @@ class QADataloader:
 
         if self.test_file is not None:
             dataloaders['test'] = {}
-            self.accelerator.print('\nLoading test datasets' + '.' * 10)
+            print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file,
                                           self.max_predict_samples,
                                           split='test',
@@ -306,7 +304,6 @@ class QADataloader:
                                 do_generative_eval= do_generative_eval,
                                 tokenizer=self.tokenizer,
                                 max_seq_length=self.model_max_length,
-                                accelerator=self.accelerator
                                 )
         else:
             dataset = AdvanceQa(json_file_paths=data_files,
@@ -319,33 +316,24 @@ class QADataloader:
                                 do_generative_eval=do_generative_eval,
                                 tokenizer=self.tokenizer,
                                 max_seq_length=self.model_max_length,
-                                accelerator=self.accelerator
                                 )
 
         # Log a few random samples from the training set:
         for index in random.sample(range(len(dataset)), 3):
-            self.accelerator.print(f"Sample {index} of the training set: {dataset[index]}.")
+            print(f"Sample {index} of the training set: {dataset[index]}.")
 
         return dataset
 
     def preprocess_data(self, dataset, split=None, perplexity_eval: bool=False):
-        with self.accelerator.main_process_first():
-            # tokenized_dataset = dataset.map(lambda data: self.tokenize_function(data,
-            #                                                                     split=split,
-            #                                                                     perplexity_eval=perplexity_eval),
-            #                                 desc=f"Running tokenizer on dataset",
-            #                                 remove_columns=dataset.column_names,
-            #                                 batched=True,
-            #                                 num_proc=1)
-            tokenized_dataset = list(map(lambda data: self.tokenize_function(data, split, perplexity_eval), dataset))
+        tokenized_dataset = list(map(lambda data: self.tokenize_function(data, split, perplexity_eval), dataset))
 
-            if self.task_type == "CAUSAL_LM" and self.do_group_texts:
-                return tokenized_dataset.map(self.group_texts,
-                                             desc=f"Grouping texts in chunks of {self.block_size}",
-                                             batched=False,
-                                             num_proc=1)
+        if self.task_type == "CAUSAL_LM" and self.do_group_texts:
+            return tokenized_dataset.map(self.group_texts,
+                                         desc=f"Grouping texts in chunks of {self.block_size}",
+                                         batched=False,
+                                         num_proc=1)
 
-            return tokenized_dataset
+        return tokenized_dataset
 
     def dynamic_collate(self, batch):
         """
@@ -488,7 +476,7 @@ class QADataloader:
         else:
             raise f"Unsupported task type for {self.task_type}"
 
-        self.accelerator.print(f"Collate function {collate_function}")
+        print(f"Collate function {collate_function}")
 
         dataloader = DataLoader(dataset,
                                 sampler=sampler,
