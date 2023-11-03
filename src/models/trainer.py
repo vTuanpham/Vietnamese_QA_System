@@ -267,7 +267,8 @@ class TorchTracemalloc:
 @record
 def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
-                              project_dir="./")
+                              project_dir="./",
+                              mixed_precision=training_args.model_dtype)
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
@@ -358,48 +359,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
     set_seed(seed)
 
-    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
-    if model_dtype != "auto":
-        model_dtype = getattr(torch, model_dtype)
-    task_type = getattr(TaskType, task_type)
-
-    # Check GPU compatibility with bfloat16
-    if compute_dtype == torch.float16 and use_4bit:
-        major, _ = torch.cuda.get_device_capability()
-        if major >= 8:
-            accelerator.print("=" * 80)
-            accelerator.print("Your GPU supports bfloat16: accelerate training with bf16=True")
-            accelerator.print("=" * 80)
-
-    if use_4bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_4bit=use_4bit,
-            bnb_4bit_use_double_quant=use_nested_quant,
-            bnb_4bit_compute_type=compute_dtype,
-            bnb_4bit_quant_type=bnb_4bit_quant_type,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    elif use_8bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_8bit=use_8bit,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    else:
-        quant_config = None
-        warnings.warn("\n   No quantization is applied")
-
-    peft_config = LoraConfig(
-        task_type=task_type,
-        inference_mode=False,
-        r=lora_r, lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        target_modules=target_modules,
-        bias=lora_bias,
-        modules_to_save=modules_to_save
-    )
-
     if not use_default_gen_config:
         try:
             generation_config, unused_config = GenerationConfig.from_pretrained(
@@ -454,6 +413,48 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator.print(f"System max memory: {max_memory}\n"
                       f"System num gpus: {n_gpus}\n"
                       f"System free in GB: {free_in_GB}")
+
+    compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
+    if model_dtype != "auto":
+        model_dtype = getattr(torch, model_dtype)
+    task_type = getattr(TaskType, task_type)
+
+    # Check GPU compatibility with bfloat16
+    if compute_dtype == torch.float16 and use_4bit:
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 8:
+            accelerator.print("=" * 80)
+            accelerator.print("Your GPU supports bfloat16: accelerate training with bf16=True")
+            accelerator.print("=" * 80)
+
+    if use_4bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=use_4bit,
+            bnb_4bit_use_double_quant=use_nested_quant,
+            bnb_4bit_compute_type=compute_dtype,
+            bnb_4bit_quant_type=bnb_4bit_quant_type,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=6.0,
+        )
+    elif use_8bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=use_8bit,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=6.0,
+        )
+    else:
+        quant_config = None
+        warnings.warn("\n   No quantization is applied")
+
+    peft_config = LoraConfig(
+        task_type=task_type,
+        inference_mode=False,
+        r=lora_r, lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+        bias=lora_bias,
+        modules_to_save=modules_to_save
+    )
 
     offload_config = {
         "device_map": "auto",
@@ -589,6 +590,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if getattr(accelerator.state, "fsdp_plugin", None) is not None:
         accelerator.print(f"FSDP detected, using FSDP...")
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(adapter)
+        if print_model_key:
+            accelerator.print(adapter)
 
     prepare_dict = {"adapter": adapter,
                     "train_dataloader": qa_dataloader_instance['train'],
