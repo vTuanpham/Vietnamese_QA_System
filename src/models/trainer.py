@@ -634,7 +634,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                         position=accelerator.process_index,
                         colour="green")
 
-    for epoch in num_epochs:
+    for epoch in range(num_epochs):
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
@@ -742,7 +742,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     with TorchTracemalloc() as tracemalloc:
                         with torch.no_grad():
                             for idx, batch in enumerate(
-                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                    tqdm(generative_eval_dataloader,
+                                         desc=f"Evaluating epoch {epoch} generative",
+                                         position=accelerator.process_index,
+                                         colour="blue")):
                                 # Pass dummy batch to avoid caffe error
                                 if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                                     inference_model(**batch)
@@ -819,7 +822,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                 with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
                                                                     enable_mem_efficient=False):
                                     for idx, batch in enumerate(
-                                            tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                            tqdm(generative_eval_dataloader,
+                                                 desc=f"Evaluating epoch {epoch} generative",
+                                                 position=accelerator.process_index,
+                                                 colour="blue")):
                                         # Pass dummy batch to avoid caffe error
                                         if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                                             inference_model(**batch)
@@ -862,7 +868,9 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     inference_model.eval()
                     losses = []
                     for step, batch in enumerate(tqdm(perplexity_eval_dataloader,
-                                                      desc=f"Evaluating epoch {epoch} perplexity")):
+                                                      desc=f"Evaluating epoch {epoch} perplexity",
+                                                      position=accelerator.process_index,
+                                                      colour="blue")):
                         with torch.no_grad():
                             outputs = inference_model(**batch)
 

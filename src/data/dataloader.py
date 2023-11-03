@@ -15,6 +15,7 @@ from typing import Optional, List, Union, Set, Any, Dict
 import numpy as np
 
 import torch
+import torch.distributed as dist
 from torch.utils.data import RandomSampler, SequentialSampler
 from torch.utils.data.dataloader import DataLoader, Dataset
 
@@ -44,13 +45,17 @@ class AdvanceQa(Dataset):
         self.full_json_data = []
         self.config_type = config_type
         self.get_example = get_example
-        for json_path, percentage_weight in tzip(json_file_paths, percentage_weights, desc=f"Loading {split} data"):
+        for json_path, percentage_weight in tzip(json_file_paths,
+                                                 percentage_weights,
+                                                 desc=f"Loading {split} data",
+                                                 disable=rank!=0):
             assert os.path.isfile(json_path), f"Invalid data path for {json_path}"
             num_examples_each_file = math.floor(num_examples * (percentage_weight/100))
             loading_bar_desc = f"Loading data from {os.path.basename(json_path)} for split {split}"
             loading_bar = tqdm(total=num_examples_each_file,
                                colour="green",
-                               desc=loading_bar_desc)
+                               desc=loading_bar_desc,
+                               disable=rank!=0)
             total_skipped = 0
             try:
                 file_name = os.path.basename(json_path)
@@ -158,6 +163,11 @@ class QADataloader:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        global rank
+        if dist.is_initialized():
+            rank = dist.get_rank()
+        else:
+            rank = 0
 
         self.text_column = text_column
         self.response_template = response_template
