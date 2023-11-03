@@ -6,8 +6,6 @@ import warnings
 import sys
 from itertools import chain
 
-from accelerate import Accelerator
-
 sys.path.insert(0, r'./')
 
 from tqdm.auto import tqdm
@@ -492,7 +490,6 @@ class QADataloader:
 
 if __name__ == "__main__":
     dataloader_args = {
-        "accelerator": Accelerator(),
         "model_name": "EleutherAI/gpt-neo-125m",
         "text_column": "prompt",
         "target_column": "target",
