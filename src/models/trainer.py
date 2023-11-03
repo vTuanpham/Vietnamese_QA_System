@@ -267,8 +267,7 @@ class TorchTracemalloc:
 @record
 def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
-                              project_dir="./",
-                              mixed_precision=training_args.model_dtype)
+                              project_dir="./")
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
