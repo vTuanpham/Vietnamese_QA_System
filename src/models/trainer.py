@@ -29,7 +29,13 @@ from torch.cuda.amp import autocast
 from accelerate import Accelerator, dispatch_model
 from accelerate.logging import get_logger
 from accelerate.utils.memory import find_executable_batch_size
-from accelerate.utils import DistributedType, release_memory, get_balanced_memory, infer_auto_device_map
+from accelerate.utils import \
+    (DistributedType,
+     release_memory,
+     get_balanced_memory,
+     infer_auto_device_map,
+     DummyScheduler,
+     DummyOptim)
 from accelerate.state import AcceleratorState
 
 from tqdm.auto import tqdm
@@ -140,6 +146,76 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
     gc.collect()
 
     return merged_model
+
+
+def prepare_any(prepare_dict: dict, distributed_type, accelerator):
+    def get_grouped_parameters(adapter, weight_decay):
+        decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
+        decay_parameters = [name for name in decay_parameters if "bias" not in name]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in adapter.named_parameters() if n in decay_parameters],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [p for n, p in adapter.named_parameters() if n not in decay_parameters],
+                "weight_decay": 0.0,
+            },
+        ]
+        return optimizer_grouped_parameters
+    dataloaders = {}
+    if distributed_type != DistributedType.DEEPSPEED:
+        adapter = accelerator.prepare(prepare_dict['adapter'])
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'], prepare_dict['weight_decay'])
+        optimizer = getattr(bnb.optim, prepare_dict['optim_name'])(optimizer_grouped_parameters, lr=prepare_dict['lr'])
+        accelerator.print(f"\nLoading {prepare_dict['optim_name']} from bits and bytes...")
+        lr_scheduler = get_scheduler(
+            name=prepare_dict['lr_sheduler_name'],
+            optimizer=optimizer,
+            num_warmup_steps=prepare_dict["warmup_steps"],
+            num_training_steps=prepare_dict["max_train_steps"],
+        )
+        dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
+            prepare_dict['train_dataloader'], optimizer, lr_scheduler
+        )
+    else:
+        # Creates Dummy Optimizer if `optimizer` was specified in the config
+        # file else creates Adam Optimizer
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'])
+        optimizer_cls = (
+            getattr(bnb.optim, prepare_dict['optim_name'])
+            if accelerator.state.deepspeed_plugin is None
+               or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            else DummyOptim
+        )
+        optimizer = optimizer_cls(optimizer_grouped_parameters, lr=prepare_dict['lr'])
+        # Creates Dummy Scheduler if `scheduler` was specified in the config
+        # file else creates `self.lr_scheduler_type` Scheduler
+        if "scheduler" in accelerator.state.deepspeed_plugin.deepspeed_config:
+            lr_scheduler = DummyScheduler(
+                optimizer,
+                total_num_steps=prepare_dict["max_train_steps"],
+                warmup_num_steps=prepare_dict['warmup_steps']
+            )
+        else:
+            lr_scheduler = get_scheduler(
+                name=prepare_dict['lr_sheduler_name'],
+                optimizer=optimizer,
+                num_warmup_steps=prepare_dict["warmup_steps"],
+                num_training_steps=prepare_dict["max_train_steps"],
+            )
+            adapter, dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
+                prepare_dict['adapter'], prepare_dict['train_dataloader'], optimizer, lr_scheduler
+            )
+
+    if "perplexity_eval_dataloader" in prepare_dict:
+        dataloaders['perplexity_eval_dataloader'] = accelerator.prepare(prepare_dict["perplexity_eval_dataloader"])
+    if "generative_eval_dataloader" in prepare_dict:
+        dataloaders['generative_eval_dataloader'] = accelerator.prepare(prepare_dict["generative_eval_dataloader"])
+    if "test_dataloader" in prepare_dict:
+        dataloaders['test_dataloader'] = accelerator.prepare(prepare_dict["test_dataloader"])
+
+    return adapter, optimizer, dataloaders, lr_scheduler
 
 
 # This context manager is used to track the peak memory usage of the process
@@ -297,36 +373,6 @@ def train(training_args):
         model_dtype = getattr(torch, model_dtype)
     task_type = getattr(TaskType, task_type)
 
-    dataloader_args = {
-        "accelerator": accelerator,
-        "model_name": model_name_or_path,
-        "text_column": text_column,
-        "target_column": label_column,
-        "train_file": training_args.train_file,
-        "each_train_file_percentage": training_args.each_train_file_percentage,
-        "val_file": training_args.val_file,
-        "test_file": training_args.test_file,
-        "train_batch_size": train_batch_size,
-        "perplexity_eval_batch_size": perplexity_eval_batch_size,
-        "generative_eval_batch_size": generative_eval_batch_size,
-        "seed": seed,
-        "max_train_samples": training_args.max_train_samples,
-        "max_eval_samples": training_args.max_eval_samples,
-        "max_predict_samples": training_args.max_predict_samples,
-        "config_type": AdvanceInstructSample,
-        "task_type": task_type,
-        "block_size": block_size,
-        "no_preprocess_data": no_preprocess_data,
-        "do_group_texts": do_group_texts,
-        "do_perplexity_eval": perplexity_eval,
-        "do_generative_eval": generative_eval,
-        "model_max_length": model_max_length,
-        "context_length": context_length,
-        "response_template": response_template,
-        "max_eval_generative_samples": max_eval_generative_samples,
-        "max_eval_perplexity_samples": max_eval_perplexity_samples
-    }
-
     # Check GPU compatibility with bfloat16
     if compute_dtype == torch.float16 and use_4bit:
         major, _ = torch.cuda.get_device_capability()
@@ -389,9 +435,41 @@ def train(training_args):
                                                                     "max_time": max_time})
     accelerator.print(f"Model generation config: {generation_config}")
 
-    with accelerator.main_process_first():
+    if accelerator.is_main_process:
+        dataloader_args = {
+            "accelerator": accelerator,
+            "model_name": model_name_or_path,
+            "text_column": text_column,
+            "target_column": label_column,
+            "train_file": training_args.train_file,
+            "each_train_file_percentage": training_args.each_train_file_percentage,
+            "val_file": training_args.val_file,
+            "test_file": training_args.test_file,
+            "train_batch_size": train_batch_size,
+            "perplexity_eval_batch_size": perplexity_eval_batch_size,
+            "generative_eval_batch_size": generative_eval_batch_size,
+            "seed": seed,
+            "max_train_samples": training_args.max_train_samples,
+            "max_eval_samples": training_args.max_eval_samples,
+            "max_predict_samples": training_args.max_predict_samples,
+            "config_type": AdvanceInstructSample,
+            "task_type": task_type,
+            "block_size": block_size,
+            "no_preprocess_data": no_preprocess_data,
+            "do_group_texts": do_group_texts,
+            "do_perplexity_eval": perplexity_eval,
+            "do_generative_eval": generative_eval,
+            "model_max_length": model_max_length,
+            "context_length": context_length,
+            "response_template": response_template,
+            "max_eval_generative_samples": max_eval_generative_samples,
+            "max_eval_perplexity_samples": max_eval_perplexity_samples
+        }
+
         qa_dataloader = QADataloader(**dataloader_args)
         qa_dataloader_instance = qa_dataloader.__call__()
+
+    accelerator.wait_for_everyone()
 
     tokenizer = qa_dataloader.tokenizer
 
@@ -551,41 +629,46 @@ def train(training_args):
     if print_model_key:
         accelerator.print(adapter)
 
-    # optimizer
-    decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
-    decay_parameters = [name for name in decay_parameters if "bias" not in name]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in adapter.named_parameters() if n in decay_parameters],
-            "weight_decay": weight_decay,
-        },
-        {
-            "params": [p for n, p in adapter.named_parameters() if n not in decay_parameters],
-            "weight_decay": 0.0,
-        },
-    ]
-
-    # bnb.optim.PagedAdamW8bit
-    optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters, lr=lr)
-    accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
-
     num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
     max_train_steps = num_epochs * num_update_steps_per_epoch
-    # lr scheduler
-    lr_scheduler = get_scheduler(
-        lr_sheduler_name,
-        optimizer=optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=max_train_steps,
-    )
 
     if getattr(accelerator.state, "fsdp_plugin", None) is not None:
         accelerator.print(f"FSDP detected, using FSDP...")
         accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(adapter)
 
-    adapter, train_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        adapter, qa_dataloader_instance['train'], optimizer, lr_scheduler
-    )
+    prepare_dict = {"adapter": adapter,
+                    "train_dataloader": qa_dataloader_instance['train'],
+                    "optim_name": optim_name,
+                    "weight_decay": weight_decay,
+                    "lr": lr,
+                    "lr_sheduler_name": lr_sheduler_name,
+                    "warmup_steps": warmup_steps,
+                    "max_train_steps": max_train_steps}
+
+    if do_eval:
+        if perplexity_eval:
+            prepare_dict["perplexity_eval_dataloader"] = qa_dataloader_instance['eval']['perplexity_eval']
+        if generative_eval:
+            prepare_dict["generative_eval_dataloader"] = qa_dataloader_instance['eval']['generative_eval']
+    else:
+        logger.info("\nEvaluation turn off for this session")
+    if do_test:
+        prepare_dict["test_dataloader"] = qa_dataloader_instance['test']
+    else:
+        logger.info("\nTest turn off for this session")
+
+    adapter, optimizer, dataloaders, lr_scheduler = prepare_any(prepare_dict,
+                                                                accelerator.distributed_type,
+                                                                accelerator)
+    train_dataloader = dataloaders['train_dataloader']
+    if do_eval:
+        if "perplexity_eval_dataloader" in dataloaders:
+            perplexity_eval_dataloader = dataloaders["perplexity_eval_dataloader"]
+        if "generative_eval_dataloader" in dataloaders:
+            generative_eval_dataloader = dataloaders["generative_eval_dataloader"]
+    if do_test:
+        if "test_dataloader" in dataloaders:
+            test_dataloader = dataloaders['test_dataloader']
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
@@ -597,20 +680,7 @@ def train(training_args):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if do_eval:
-        if perplexity_eval:
-            perplexity_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['perplexity_eval'])
-        if generative_eval:
-            generative_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['generative_eval'])
-    else:
-        logger.info("\nEvaluation turn off for this session")
-
-    if do_test:
-        test_dataloader = accelerator.prepare(qa_dataloader_instance['test'])
-    else:
-        logger.info("\nTest turn off for this session")
-
-    completed_steps  = 0
+    completed_steps = 0
 
     if checkpointing_steps:
         # Register the LR scheduler
@@ -898,11 +968,16 @@ def train(training_args):
             gc.collect()
 
     accelerator.wait_for_everyone()
-    adapter.save_pretrained(dataset_name)
-    adapter.push_to_hub(
+    unwrapped_adapter = accelerator.unwrap_model(adapter)
+    unwrapped_adapter.save_pretrained(dataset_name,
+                                      is_main_process=accelerator.is_main_process,
+                                      save_function=accelerator.save,
+                                      state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                                      )
+    unwrapped_adapter.push_to_hub(
         "1TuanPham/"
         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
-        state_dict=accelerator.get_state_dict(adapter),
+        state_dict=accelerator.get_state_dict(unwrapped_adapter),
         use_auth_token=True,
     )
     accelerator.wait_for_everyone()
