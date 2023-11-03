@@ -11,6 +11,7 @@ fsdp_config:
   fsdp_offload_params: true
   fsdp_sharding_strategy: 1
   fsdp_state_dict_type: FULL_STATE_DICT
+  fsdp_transformer_layer_cls_to_wrap: LlamaDecoderLayer LlamaAttention LlamaMLP LlamaRMSNorm Linear LlamaRotaryEmbedding
 gpu_ids: null
 machine_rank: 0
 main_process_ip: null
