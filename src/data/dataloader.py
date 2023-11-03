@@ -24,6 +24,7 @@ from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForL
 from trl import DataCollatorForCompletionOnlyLM
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
+from src.utils import dist_print
 
 
 class AdvanceQa(Dataset):
@@ -54,7 +55,7 @@ class AdvanceQa(Dataset):
             try:
                 file_name = os.path.basename(json_path)
                 extension = json_path.split(".")[-1]
-                print(f"Loading {num_examples_each_file} examples with percentage of {percentage_weight} from {file_name}...")
+                dist_print(f"Loading {num_examples_each_file} examples with percentage of {percentage_weight} from {file_name}...")
                 iterable_json_data = load_dataset(extension, data_files=json_path,
                                                   streaming=True, keep_in_memory=False)
                 for idx, data in enumerate(iter(iterable_json_data['train'])):
@@ -93,8 +94,8 @@ class AdvanceQa(Dataset):
                     self.full_json_data.append(config_data)
                     loading_bar.update(1)
                 loading_bar.close()
-                print(f"\nFinished loading from {file_name} with total loaded {len(self.full_json_data)} examples\n"
-                      f"\nTotal data skipped: {total_skipped}\n")
+                dist_print(f"\nFinished loading from {file_name} with total loaded {len(self.full_json_data)} examples\n"
+                           f"\nTotal data skipped: {total_skipped}\n")
                 del iterable_json_data,
                 gc.collect()
             except IOError as e:
@@ -225,7 +226,7 @@ class QADataloader:
         dataloaders = {}
         self.dataset = {}
         if self.train_file is not None:
-            print('\nLoading train datasets' + '.' * 10)
+            dist_print('\nLoading train datasets' + '.' * 10)
             train_dataset = self.load_data(self.train_file, self.max_train_samples, split='train')
             dataloaders['train'] = self.get_dataloader(train_dataset if self.no_preprocess_data else self.preprocess_data(train_dataset, split='train'),
                                                        shuffle_flag=True,
@@ -234,7 +235,7 @@ class QADataloader:
 
         if self.val_file is not None:
             dataloaders['eval'] = {}
-            print('\nLoading validation datasets' + '.' * 10)
+            dist_print('\nLoading validation datasets' + '.' * 10)
             eval_dataset = self.load_data(self.val_file,
                                           self.max_eval_samples,
                                           split='eval',
@@ -255,7 +256,7 @@ class QADataloader:
 
         if self.test_file is not None:
             dataloaders['test'] = {}
-            print('\nLoading test datasets' + '.' * 10)
+            dist_print('\nLoading test datasets' + '.' * 10)
             test_dataset = self.load_data(self.test_file,
                                           self.max_predict_samples,
                                           split='test',
@@ -318,7 +319,7 @@ class QADataloader:
 
         # Log a few random samples from the training set:
         for index in random.sample(range(len(dataset)), 3):
-            print(f"Sample {index} of the training set: {dataset[index]}.")
+            dist_print(f"Sample {index} of the training set: {dataset[index]}.")
 
         return dataset
 
@@ -474,7 +475,7 @@ class QADataloader:
         else:
             raise f"Unsupported task type for {self.task_type}"
 
-        print(f"Collate function {collate_function}")
+        dist_print(f"Collate function {collate_function}")
 
         dataloader = DataLoader(dataset,
                                 sampler=sampler,

@@ -630,11 +630,18 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         # Save the starting state
         accelerator.save_state(output_dir="src/models/runs/checkpoints")
 
-    for epoch in tqdm(range(num_epochs), desc="Training progress"):
+    progress_bar = tqdm(total=num_epochs, desc="Training progress",
+                        position=accelerator.process_index,
+                        colour="green")
+
+    for epoch in num_epochs:
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Training progress epoch {epoch}")):
+            for step, batch in enumerate(tqdm(train_dataloader,
+                                              desc=f"Training progress epoch {epoch}",
+                                              position=accelerator.process_index,
+                                              colour="blue")):
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
@@ -649,6 +656,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     accelerator.print(total_loss / step)
                     completed_steps += 1
                     del loss, outputs, batch
+
+        progress_bar.update(1)
 
                 # if isinstance(checkpointing_steps, int):
                 #     if completed_steps % checkpointing_steps == 0:
