@@ -716,8 +716,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                 if accelerator.sync_gradients:
                     current_loss = (total_loss / step).item()
                     completed_steps += 1
-                    tqdm.write(f"Current loss: {current_loss}, step: {completed_steps}")
-                    progress_bar_step.desc = f"Training progress epoch {epoch} on process {accelerator.process_index}|L-{current_loss}-S-{completed_steps}"
+                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}\n")
+                    rate = progress_bar_step.format_dict["rate"]
+                    remaining = (progress_bar_step.total - progress_bar_step.n) / rate if rate and progress_bar_step.total else 0
+                    progress_bar_step.desc = f"Training progress epoch {epoch} on process {accelerator.process_index}|L-{current_loss}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
                     del loss, outputs, batch
 
                 overall_step += 1
@@ -1020,21 +1022,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             gc.collect()
 
     save_push()
-    # accelerator.wait_for_everyone()
-    # unwrapped_adapter = accelerator.unwrap_model(adapter)
-    # unwrapped_adapter.save_pretrained(dataset_name,
-    #                                   is_main_process=accelerator.is_main_process,
-    #                                   save_function=accelerator.save,
-    #                                   state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-    #                                   )
-    # if accelerator.is_main_process:
-    #     unwrapped_adapter.push_to_hub(
-    #         "1TuanPham/"
-    #         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
-    #         state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-    #         use_auth_token=True,
-    #     )
-    # accelerator.wait_for_everyone()
 
 
 if __name__ == "__main__":
