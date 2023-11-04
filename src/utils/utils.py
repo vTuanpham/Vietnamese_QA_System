@@ -23,6 +23,14 @@ def dist_print(string: str):
         print(string)
 
 
+def in_notebook():
+    """
+    Returns ``True`` if the module is running in IPython kernel,
+    ``False`` if in IPython shell or other Python shell.
+    """
+    return 'ipykernel' in sys.modules
+
+
 def set_seed(value):
     print("\n Random Seed: ", value)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"

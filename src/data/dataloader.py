@@ -8,7 +8,6 @@ from itertools import chain
 
 sys.path.insert(0, r'./')
 
-from tqdm.auto import tqdm
 from tqdm.contrib import tzip
 from typing import Optional, List, Union, Set, Any, Dict
 
@@ -25,7 +24,16 @@ from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForL
 from trl import DataCollatorForCompletionOnlyLM
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
-from src.utils import dist_print
+from src.utils import dist_print, in_notebook
+
+
+if in_notebook():
+    try:
+        from tqdm import tqdm_notebook as tqdm
+    except ImportError as e:
+        from tqdm.auto import tqdm
+else:
+    from tqdm.auto import tqdm
 
 
 class AdvanceQa(Dataset):

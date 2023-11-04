@@ -68,7 +68,8 @@ def parse_arguments():
     training_group.add_argument("--enable_model_offload", action='store_true', help="Enable model offload")
     training_group.add_argument("--minimum_free_spaces", type=int, default=1, help="Minimum free spaces to keep in GB")
     training_group.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
-    training_group.add_argument("--resume_from_checkpoint")
+    training_group.add_argument("--resume_from_checkpoint", type=str,
+                                default=None, help="If the training should continue from a checkpoint folder.")
     training_group.add_argument("--checkpointing_steps", type=str, default=None, help="How often should we save"
                                                                                       "state for resume")
 

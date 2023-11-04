@@ -8,6 +8,8 @@ import warnings
 import datetime
 from typing import List
 
+from src.utils import timeit
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["TORCHELASTIC_ERROR_FILE"] = "src/models/runs/logs/ERROR_file.txt"
 import sys
@@ -40,7 +42,6 @@ from accelerate.utils import \
      DummyOptim, is_xpu_available)
 from accelerate.state import AcceleratorState
 
-from tqdm.auto import tqdm
 import datasets, transformers
 from transformers import \
     (AutoModelForCausalLM,
@@ -58,6 +59,15 @@ from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, pr
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from src.models.model_utils import poor_man_llm_load
+from src.utils import in_notebook
+
+if in_notebook():
+    try:
+        from tqdm import tqdm_notebook as tqdm
+    except ImportError as e:
+        from tqdm.auto import tqdm
+else:
+    from tqdm.auto import tqdm
 
 logger = get_logger(__name__)
 
@@ -266,6 +276,7 @@ class TorchTracemalloc:
 
 
 @record
+@timeit
 def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
                               project_dir="./")
@@ -355,7 +366,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     modules_to_save = training_args.modules_to_save
     warmup_steps = training_args.warmup_steps
     no_split_module_classes = training_args.no_split_module_classes
-    checkpointing_steps = training_args.checkpointing_steps
+    resume_from_checkpoint = training_args.resume_from_checkpoint
 
     set_seed(seed)
 
@@ -464,7 +475,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         else {"": accelerator.local_process_index}
     ) if accelerator.distributed_type != DistributedType.NO else "auto"
 
-    accelerator.print(f"\nModel device map: {device_map}\n")
+    with accelerator.main_process_first():
+        print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
 
     offload_config = {
         "device_map": device_map,
@@ -601,6 +613,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     else:
         logger.info("\nTest turn off for this session")
 
+    accelerator.print("\n Dict items to prepare: \n")
+    for key, value in prepare_dict.items():
+        accelerator.print(f" {key}: {value}\n")
+
     adapter, optimizer, dataloaders, lr_scheduler = prepare_any(prepare_dict,
                                                                 accelerator.distributed_type,
                                                                 accelerator)
@@ -624,27 +640,69 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    completed_steps = 0
-
-    if checkpointing_steps:
+    if training_args.checkpointing_steps:
         # Register the LR scheduler
         accelerator.register_for_checkpointing(lr_scheduler)
+        # Parse out whether we are saving every epoch or after a certain number of batches
+        if hasattr(training_args.checkpointing_steps, "isdigit"):
+            if training_args.checkpointing_steps == "epoch":
+                checkpointing_steps = training_args.checkpointing_steps
+            elif training_args.checkpointing_steps.isdigit():
+                checkpointing_steps = int(training_args.checkpointing_steps)
+            else:
+                raise ValueError(
+                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{training_args.checkpointing_steps}` passed."
+                )
+        else:
+            checkpointing_steps = None
 
-        # Save the starting state
-        accelerator.save_state(output_dir="src/models/runs/checkpoints")
+    # We need to keep track of how many total steps we have iterated over
+    completed_steps = 0
+    overall_step = 0
+    # We also need to keep track of the stating epoch so files are named properly
+    starting_epoch = 0
 
-    progress_bar_epoch = tqdm(total=num_epochs, desc=f"Training progress on process {accelerator.process_index}",
+    if resume_from_checkpoint:
+        if resume_from_checkpoint is not None or resume_from_checkpoint != "":
+            accelerator.print(f"Resumed from checkpoint: {resume_from_checkpoint}")
+            accelerator.load_state(resume_from_checkpoint)
+            path = os.path.basename(resume_from_checkpoint)
+        else:
+            # Get the most recent checkpoint
+            dirs = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
+            dirs.sort(key=os.path.getctime)
+            path = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
+        # Extract `epoch_{i}` or `step_{i}`
+        training_difference = os.path.splitext(path)[0]
+
+        if "epoch" in training_difference:
+            starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+            resume_step = None
+        else:
+            resume_step = int(training_difference.replace("step_", ""))
+            starting_epoch = resume_step // len(train_dataloader)
+            resume_step -= starting_epoch * len(train_dataloader)
+
+    progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
                               position=accelerator.process_index,
                               colour="green")
 
-    for epoch in range(num_epochs):
+    for epoch in range(starting_epoch, num_epochs):
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
-            for step, batch in enumerate(tqdm(train_dataloader,
-                                              desc=f"Training progress epoch {epoch} on process {accelerator.process_index}",
-                                              position=accelerator.process_index,
-                                              colour="blue")):
+            if resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
+                # We need to skip steps until we reach the resumed step
+                active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
+                overall_step += resume_step
+            else:
+                # After the first iteration though, we need to go back to the original dataloader
+                active_dataloader = train_dataloader
+            progress_bar_step = tqdm(total=len(active_dataloader),
+                                     desc=f"Training progress epoch {epoch} on process {accelerator.process_index}",
+                                     position=accelerator.process_index,
+                                     colour="blue")
+            for step, batch in enumerate(active_dataloader):
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
@@ -656,19 +714,22 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    accelerator.print(total_loss / step)
+                    current_loss = (total_loss / step).item()
                     completed_steps += 1
+                    tqdm.write(f"Current loss: {current_loss}, step: {completed_steps}")
+                    progress_bar_step.desc = f"Training progress epoch {epoch} on process {accelerator.process_index}|L-{current_loss}-S-{completed_steps}"
                     del loss, outputs, batch
 
-        progress_bar_epoch.update(1)
+                overall_step += 1
+                progress_bar_step.update(1)
 
-                # if isinstance(checkpointing_steps, int):
-                #     if completed_steps % checkpointing_steps == 0:
-                #         output_dir = f"step_{completed_steps}"
-                #         output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
-                #         accelerator.save_state(output_dir)
-                # if completed_steps >= args.max_train_steps:
-                #     break
+                if isinstance(checkpointing_steps, int):
+                    if overall_step % checkpointing_steps == 0:
+                        output_dir = f"step_{overall_step}"
+                        output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
+                        accelerator.save_state(output_dir)
+
+        progress_bar_epoch.update(1)
 
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
@@ -691,6 +752,33 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         train_epoch_loss = total_loss / len(train_dataloader)
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=}")
+
+        if checkpointing_steps == "epoch":
+            output_dir = f"epoch_{epoch}"
+            output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
+            accelerator.save_state(output_dir)
+
+        def save_push():
+            accelerator.wait_for_everyone()
+            unwrapped_adapter = accelerator.unwrap_model(adapter)
+            unwrapped_adapter.save_pretrained(dataset_name,
+                                              is_main_process=accelerator.is_main_process,
+                                              save_function=accelerator.save,
+                                              state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                                              )
+            if accelerator.is_main_process:
+                unwrapped_adapter.push_to_hub(
+                    "1TuanPham/"
+                    + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                        "/",
+                        "_"),
+                    state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                    use_auth_token=True,
+                )
+            accelerator.wait_for_everyone()
+
+        if num_epochs - starting_epoch == 1:
+            save_push()
 
         # TODO: Refactor evaluation
         if do_eval:
@@ -931,21 +1019,22 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             shutil.rmtree('offload_inf') if os.path.exists("offload_inf") else None
             gc.collect()
 
-    accelerator.wait_for_everyone()
-    unwrapped_adapter = accelerator.unwrap_model(adapter)
-    unwrapped_adapter.save_pretrained(dataset_name,
-                                      is_main_process=accelerator.is_main_process,
-                                      save_function=accelerator.save,
-                                      state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-                                      )
-    if accelerator.is_main_process:
-        unwrapped_adapter.push_to_hub(
-            "1TuanPham/"
-            + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
-            state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-            use_auth_token=True,
-        )
-    accelerator.wait_for_everyone()
+    save_push()
+    # accelerator.wait_for_everyone()
+    # unwrapped_adapter = accelerator.unwrap_model(adapter)
+    # unwrapped_adapter.save_pretrained(dataset_name,
+    #                                   is_main_process=accelerator.is_main_process,
+    #                                   save_function=accelerator.save,
+    #                                   state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+    #                                   )
+    # if accelerator.is_main_process:
+    #     unwrapped_adapter.push_to_hub(
+    #         "1TuanPham/"
+    #         + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
+    #         state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+    #         use_auth_token=True,
+    #     )
+    # accelerator.wait_for_everyone()
 
 
 if __name__ == "__main__":
