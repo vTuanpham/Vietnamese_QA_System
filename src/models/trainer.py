@@ -716,10 +716,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                 if accelerator.sync_gradients:
                     current_loss = (total_loss / step).item()
                     completed_steps += 1
-                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}\n")
+                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
                     rate = progress_bar_step.format_dict["rate"]
                     remaining = (progress_bar_step.total - progress_bar_step.n) / rate if rate and progress_bar_step.total else 0
-                    progress_bar_step.desc = f"Training progress epoch {epoch} on process {accelerator.process_index}|L-{current_loss}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
+                    progress_bar_step.desc = f"Training progress epoch {epoch} process {accelerator.process_index}|L-{round(current_loss, 4)}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
                     del loss, outputs, batch
 
                 overall_step += 1
