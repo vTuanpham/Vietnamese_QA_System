@@ -3,13 +3,15 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --each_train_file_percentage 100 \
         --val_file "src/data/features/final_storge_converted/THUDM-webglm-qa/WebglmQA.json" \
         --lora_r 64 \
+        --with_tracking \
+        --output_dir "./" \
+        --log_weights_cpkt \
         --dataset_name "Instruction_tune_8k_e3_en-vi" \
         --model_name_or_path EleutherAI/gpt-neo-125m \
-        --checkpointing_steps 2000 \
-        --resume_from_checkpoint "src/models/runs/checkpoints/step_6000" \
+        --checkpointing_steps 500 \
         --shard_model \
         --max_model_shard_size 200MB \
-        --max_train_samples 5000 \
+        --max_train_samples 2000 \
         --max_eval_samples 500 \
         --train_batch_size 1 \
         --num_epochs  2 \

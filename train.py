@@ -50,6 +50,19 @@ def parse_arguments():
     bitsandbytes_group.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
 
     training_group = parser.add_argument_group("Training configs group")
+    training_group.add_argument("--log_weights_cpkt", action="store_true", help="Whether to log checkpoint to wandb")
+    training_group.add_argument("--with_tracking", action="store_true", help="Whether to enable experiment trackers for logging.")
+    training_group.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
+    training_group.add_argument(
+        "--report_to",
+        type=str,
+        default="wandb",
+        help=(
+            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
+            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
+            "Only applicable when `--with_tracking` is passed."
+        ),
+    )
     training_group.add_argument("--optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
     training_group.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     training_group.add_argument("--lr", type=float, default=5e-5, help="Learning rate")

@@ -17,6 +17,7 @@ sys.path.insert(0,r'./')
 import psutil
 import threading
 
+import wandb
 import numpy as np
 
 import torch
@@ -53,6 +54,7 @@ from transformers import \
      AutoConfig,
      pipeline)
 from transformers.trainer_pt_utils import get_parameter_names
+from transformers.utils import send_example_telemetry
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
@@ -70,6 +72,7 @@ else:
     from tqdm.auto import tqdm
 
 logger = get_logger(__name__)
+PROJECT_NAME = "Vietnamese_Instruct_LLM"
 
 
 # Converting Bytes to Megabytes
@@ -278,8 +281,16 @@ class TorchTracemalloc:
 @record
 @timeit
 def train(training_args, qa_dataloader, qa_dataloader_instance):
+    send_example_telemetry(training_args.dataset_name, training_args)
+
+    accelerator_log_kwargs = {}
+
+    if training_args.with_tracking:
+        accelerator_log_kwargs["log_with"] = training_args.report_to
+        accelerator_log_kwargs["project_dir"] = training_args.output_dir
+
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
-                              project_dir="./")
+                              **accelerator_log_kwargs)
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
@@ -367,6 +378,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     warmup_steps = training_args.warmup_steps
     no_split_module_classes = training_args.no_split_module_classes
     resume_from_checkpoint = training_args.resume_from_checkpoint
+    report_to = training_args.report_to
+    with_tracking = training_args.with_tracking
 
     set_seed(seed)
 
@@ -662,6 +675,14 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     # We also need to keep track of the stating epoch so files are named properly
     starting_epoch = 0
 
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if with_tracking:
+        experiment_config = vars(training_args)
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
+        accelerator.init_trackers(PROJECT_NAME, experiment_config)
+
     if resume_from_checkpoint:
         if resume_from_checkpoint is not None or resume_from_checkpoint != "":
             accelerator.print(f"Resumed from checkpoint: {resume_from_checkpoint}")
@@ -714,11 +735,22 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    current_loss = (total_loss / step).item()
-                    completed_steps += 1
-                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
                     rate = progress_bar_step.format_dict["rate"]
                     remaining = (progress_bar_step.total - progress_bar_step.n) / rate if rate and progress_bar_step.total else 0
+                    current_loss = (total_loss / step).item()
+                    if with_tracking:
+                        accelerator.log(
+                            {
+                                "current_loss_batch": current_loss,
+                                "overall_steps": overall_step,
+                                "Elapsed(hours)": progress_bar_step.format_dict['elapsed'] / 60 / 60,
+                                "Time_left(hours)": round(remaining / 60 / 60, 3),
+                                "learning_rate": lr_scheduler.get_last_lr()[0]
+                            },
+                            step=completed_steps
+                        )
+                    completed_steps += 1
+                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
                     progress_bar_step.desc = f"Training progress epoch {epoch} process {accelerator.process_index}|L-{round(current_loss, 4)}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
                     del loss, outputs, batch
 
@@ -727,9 +759,19 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
                 if isinstance(checkpointing_steps, int):
                     if overall_step % checkpointing_steps == 0:
-                        output_dir = f"step_{overall_step}"
-                        output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
+                        output_cpkt_dir = f"step_{overall_step}"
+                        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
                         accelerator.save_state(output_dir)
+                        if accelerator.is_main_process and training_args.log_weights_cpkt:
+                            if training_args.with_tracking and training_args.log_weights_cpkt:
+                                if training_args.report_to == "wandb":
+                                    wandb_artifact = wandb.Artifact(
+                                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
+                                        type='model',
+                                        description="Model checkpoint for VQA")
+                            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
+                            wandb_artifact.add_dir(output_dir)
+                            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
 
         progress_bar_epoch.update(1)
 
@@ -778,6 +820,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     use_auth_token=True,
                 )
             accelerator.wait_for_everyone()
+            if with_tracking:
+                accelerator.end_training()
 
         if num_epochs - starting_epoch == 1:
             save_push()
