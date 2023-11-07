@@ -1,19 +1,23 @@
-import datetime
 import gc
 import math
 import os
 import random
 import shutil
 import logging
-from copy import deepcopy
 import warnings
+import datetime
+from typing import List
+
+from src.utils import timeit
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TORCHELASTIC_ERROR_FILE"] = "src/models/runs/logs/ERROR_file.txt"
 import sys
 sys.path.insert(0,r'./')
 import psutil
 import threading
 
+import wandb
 import numpy as np
 
 import torch
@@ -24,14 +28,21 @@ except Exception:
     raise "Please update your pytorch, this script require a version higher than 1.7 with cuda"
 import deepspeed
 import torch.nn as nn
+from torch.cuda.amp import autocast
+from torch.distributed.elastic.multiprocessing.errors import record
 
-from accelerate import Accelerator
+from accelerate import Accelerator, dispatch_model
 from accelerate.logging import get_logger
 from accelerate.utils.memory import find_executable_batch_size
-from accelerate.utils import DistributedType
+from accelerate.utils import \
+    (DistributedType,
+     release_memory,
+     get_balanced_memory,
+     infer_auto_device_map,
+     DummyScheduler,
+     DummyOptim, is_xpu_available)
 from accelerate.state import AcceleratorState
 
-from tqdm.auto import tqdm
 import datasets, transformers
 from transformers import \
     (AutoModelForCausalLM,
@@ -43,16 +54,25 @@ from transformers import \
      AutoConfig,
      pipeline)
 from transformers.trainer_pt_utils import get_parameter_names
+from transformers.utils import send_example_telemetry
 
 import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
+from peft.utils.other import fsdp_auto_wrap_policy
 
-from src.data import QADataloader
 from src.models.model_utils import poor_man_llm_load
-from src.data.configs import AdvanceInstructSample, AdvanceQAExample
+from src.utils import in_notebook
 
+if in_notebook():
+    try:
+        from tqdm import tqdm_notebook as tqdm
+    except ImportError as e:
+        from tqdm.auto import tqdm
+else:
+    from tqdm.auto import tqdm
 
 logger = get_logger(__name__)
+PROJECT_NAME = "Vietnamese_Instruct_LLM"
 
 
 # Converting Bytes to Megabytes
@@ -62,17 +82,19 @@ def b2mb(x):
 
 def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
                   adapter_save_path: str, adapter_name: str, main_process: bool,
-                  model_type: str="CAUSAL_LM", model_dtype=None, better_transformer: bool=False,
-                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB"):
-
+                  model_type: str="CAUSAL_LM", model_dtype=None, shard_model: bool=False,
+                  max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
+                  no_split_module_classes: List[str]=None, accelerator=None):
     peft_adapter.save_pretrained(adapter_save_path,
-                                 save_adapter=True,
-                                 is_main_process=main_process)
+                                 is_main_process=accelerator.is_main_process,
+                                 save_function=accelerator.save,
+                                 state_dict=accelerator.get_state_dict(peft_adapter, unwrap=False),
+                                 )
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
-        # "device_map": "auto",
-        # "offload_folder": "offload_inf",
+        "device_map": "auto",
+        "offload_folder": "offload_inf",
         "torch_dtype": model_dtype,
         "use_cache": True,
         "offload_state_dict": True,
@@ -107,25 +129,106 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
         gc.collect()
         return peft_adapter
 
-    if better_transformer:
-        try:
-            base_model = base_model.to_bettertransformer()
-        except Exception as e:
-            warnings.warn(f"This model type {base_model_name} is not yet "
-                          f"support for BetterTransformer, please change model type if "
-                          f"you still want to use it.\n Continue running without it...")
-            warnings.warn(f"Error message: {e}")
-            pass
+    max_memory = get_balanced_memory(
+        base_model,
+        max_memory=None,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype,
+        low_zero=False,
+    )
+
+    device_map = infer_auto_device_map(
+        base_model,
+        max_memory=max_memory,
+        no_split_module_classes=no_split_module_classes,
+        dtype=model_dtype
+    )
+
+    base_model = dispatch_model(base_model, device_map=device_map, offload_dir="offload_inf")
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
                                                device_map="auto",
+                                               offload_folder="offload_inf",
+                                               torch_dtype=model_dtype,
+                                               max_memory=max_memory
                                                )
+
     merged_model = model_to_merge.merge_and_unload(progressbar=True)
     del base_model, peft_adapter, model_to_merge
     gc.collect()
 
     return merged_model
+
+
+def prepare_any(prepare_dict: dict, distributed_type, accelerator):
+    def get_grouped_parameters(adapter, weight_decay):
+        decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
+        decay_parameters = [name for name in decay_parameters if "bias" not in name]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in adapter.named_parameters() if n in decay_parameters],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [p for n, p in adapter.named_parameters() if n not in decay_parameters],
+                "weight_decay": 0.0,
+            },
+        ]
+        return optimizer_grouped_parameters
+    dataloaders = {}
+    if distributed_type != DistributedType.DEEPSPEED:
+        adapter = accelerator.prepare(prepare_dict['adapter'])
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'], prepare_dict['weight_decay'])
+        optimizer = getattr(bnb.optim, prepare_dict['optim_name'])(optimizer_grouped_parameters, lr=prepare_dict['lr'])
+        accelerator.print(f"\nLoading {prepare_dict['optim_name']} from bits and bytes...")
+        lr_scheduler = get_scheduler(
+            name=prepare_dict['lr_sheduler_name'],
+            optimizer=optimizer,
+            num_warmup_steps=prepare_dict["warmup_steps"],
+            num_training_steps=prepare_dict["max_train_steps"],
+        )
+        dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
+            prepare_dict['train_dataloader'], optimizer, lr_scheduler
+        )
+    else:
+        # Creates Dummy Optimizer if `optimizer` was specified in the config
+        # file else creates Adam Optimizer
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'])
+        optimizer_cls = (
+            getattr(bnb.optim, prepare_dict['optim_name'])
+            if accelerator.state.deepspeed_plugin is None
+               or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            else DummyOptim
+        )
+        optimizer = optimizer_cls(optimizer_grouped_parameters, lr=prepare_dict['lr'])
+        # Creates Dummy Scheduler if `scheduler` was specified in the config
+        # file else creates `self.lr_scheduler_type` Scheduler
+        if "scheduler" in accelerator.state.deepspeed_plugin.deepspeed_config:
+            lr_scheduler = DummyScheduler(
+                optimizer,
+                total_num_steps=prepare_dict["max_train_steps"],
+                warmup_num_steps=prepare_dict['warmup_steps']
+            )
+        else:
+            lr_scheduler = get_scheduler(
+                name=prepare_dict['lr_sheduler_name'],
+                optimizer=optimizer,
+                num_warmup_steps=prepare_dict["warmup_steps"],
+                num_training_steps=prepare_dict["max_train_steps"],
+            )
+            adapter, dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
+                prepare_dict['adapter'], prepare_dict['train_dataloader'], optimizer, lr_scheduler
+            )
+
+    if "perplexity_eval_dataloader" in prepare_dict:
+        dataloaders['perplexity_eval_dataloader'] = accelerator.prepare(prepare_dict["perplexity_eval_dataloader"])
+    if "generative_eval_dataloader" in prepare_dict:
+        dataloaders['generative_eval_dataloader'] = accelerator.prepare(prepare_dict["generative_eval_dataloader"])
+    if "test_dataloader" in prepare_dict:
+        dataloaders['test_dataloader'] = accelerator.prepare(prepare_dict["test_dataloader"])
+
+    return adapter, optimizer, dataloaders, lr_scheduler
 
 
 # This context manager is used to track the peak memory usage of the process
@@ -175,9 +278,19 @@ class TorchTracemalloc:
         self.cpu_peaked = b2mb(self.cpu_peak - self.cpu_begin)
 
 
-def train(training_args):
+@record
+@timeit
+def train(training_args, qa_dataloader, qa_dataloader_instance):
+    send_example_telemetry(training_args.dataset_name, training_args)
+
+    accelerator_log_kwargs = {}
+
+    if training_args.with_tracking:
+        accelerator_log_kwargs["log_with"] = training_args.report_to
+        accelerator_log_kwargs["project_dir"] = training_args.output_dir
+
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
-                              project_dir="./")
+                              **accelerator_log_kwargs)
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
@@ -216,9 +329,6 @@ def train(training_args):
     gradient_accumulation_steps = training_args.gradient_accumulation_steps
     lr_sheduler_name = training_args.lr_sheduler_name
     dataset_name = training_args.dataset_name
-    train_batch_size = training_args.train_batch_size
-    perplexity_eval_batch_size = training_args.perplexity_eval_batch_size
-    generative_eval_batch_size = training_args.generative_eval_batch_size
     text_column = training_args.text_column
     label_column = training_args.label_column
     lr = training_args.lr
@@ -230,11 +340,7 @@ def train(training_args):
     weight_decay = training_args.weight_decay
     target_modules = training_args.target_modules
     task_type = training_args.model_type
-    block_size = training_args.block_size
-    do_group_texts = training_args.do_group_texts
-    model_max_length = training_args.model_max_length
     context_length = training_args.context_length
-    better_transformer = training_args.better_transformer
     model_offload = training_args.enable_model_offload
     llm_int8_cpu_offload = training_args.llm_int8_enable_fp32_cpu_offload
     optim_name = training_args.optim_name
@@ -256,7 +362,6 @@ def train(training_args):
     no_truncation = training_args.no_truncation
     encoder_repetition_penalty = training_args.encoder_repetition_penalty
     max_length = training_args.max_length
-    no_preprocess_data = training_args.no_preprocess_data
     max_new_tokens = training_args.max_new_tokens
     shard_model = training_args.shard_model
     max_model_shard_size = training_args.max_model_shard_size
@@ -266,51 +371,77 @@ def train(training_args):
     auto_kernel_injection = training_args.auto_kernel_injection
     use_default_gen_config = training_args.use_default_gen_config
     shard_model_merge = training_args.shard_model_merge
-    response_template = training_args.response_template
     minimum_free_spaces = training_args.minimum_free_spaces
     use_flash_attention_2 = training_args.use_flash_attention_2
-    max_eval_generative_samples = training_args.max_eval_generative_samples
-    max_eval_perplexity_samples = training_args.max_eval_perplexity_samples
     lora_bias = training_args.lora_bias
     modules_to_save = training_args.modules_to_save
     warmup_steps = training_args.warmup_steps
+    no_split_module_classes = training_args.no_split_module_classes
+    resume_from_checkpoint = training_args.resume_from_checkpoint
+    report_to = training_args.report_to
+    with_tracking = training_args.with_tracking
 
     set_seed(seed)
+
+    if not use_default_gen_config:
+        try:
+            generation_config, unused_config = GenerationConfig.from_pretrained(
+                model_name_or_path, top_k=top_k, do_sample=do_sample, return_unused_kwargs=True,
+                no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=early_stopping,
+                max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
+                truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
+                max_new_tokens=max_new_tokens, top_p=top_p, use_cache=True, low_memory=True
+            )
+            if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
+        except Exception as e:
+            warnings.warn(f"The model {model_name_or_path} does not have a generation config")
+            warnings.warn(f"Error message: {e}")
+            generation_config = GenerationConfig.from_dict(config_dict={
+                "top_k": top_k, "do_sample": do_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": early_stopping,
+                "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
+                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
+                "max_length": max_length, "truncation": not no_truncation, "top_p": top_p, "use_cache": True, "low_memory": True
+            })
+    else:
+        generation_config = GenerationConfig.from_dict(config_dict={"min_new_tokens": 20,
+                                                                    "max_length": context_length,
+                                                                    "max_time": max_time})
+    accelerator.print(f"Model generation config: {generation_config}")
+
+    tokenizer = qa_dataloader.tokenizer
+
+    accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
+    for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
+        accelerator.print("\n==============================================================================\n")
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        labels = data['labels'].cpu().numpy()
+        labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
+        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        accelerator.print("\n==============================================================================\n")
+        if idx == 10: break
+
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name_or_path,
+        )
+    except Exception:
+        warnings.warn(f"Model {model_name_or_path} does not have a config.json")
+        config = None
+
+    # System setup info
+    free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
+    max_memory = f'{int(torch.cuda.mem_get_info()[0] / 1024 ** 3) - minimum_free_spaces}GB'
+    n_gpus = torch.cuda.device_count()
+    max_memory = {i: max_memory for i in range(n_gpus)}
+
+    accelerator.print(f"System max memory: {max_memory}\n"
+                      f"System num gpus: {n_gpus}\n"
+                      f"System free in GB: {free_in_GB}")
 
     compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
     if model_dtype != "auto":
         model_dtype = getattr(torch, model_dtype)
     task_type = getattr(TaskType, task_type)
-
-    dataloader_args = {
-        "accelerator": accelerator,
-        "model_name": model_name_or_path,
-        "text_column": text_column,
-        "target_column": label_column,
-        "train_file": training_args.train_file,
-        "each_train_file_percentage": training_args.each_train_file_percentage,
-        "val_file": training_args.val_file,
-        "test_file": training_args.test_file,
-        "train_batch_size": train_batch_size,
-        "perplexity_eval_batch_size": perplexity_eval_batch_size,
-        "generative_eval_batch_size": generative_eval_batch_size,
-        "seed": seed,
-        "max_train_samples": training_args.max_train_samples,
-        "max_eval_samples": training_args.max_eval_samples,
-        "max_predict_samples": training_args.max_predict_samples,
-        "config_type": AdvanceInstructSample,
-        "task_type": task_type,
-        "block_size": block_size,
-        "no_preprocess_data": no_preprocess_data,
-        "do_group_texts": do_group_texts,
-        "do_perplexity_eval": perplexity_eval,
-        "do_generative_eval": generative_eval,
-        "model_max_length": model_max_length,
-        "context_length": context_length,
-        "response_template": response_template,
-        "max_eval_generative_samples": max_eval_generative_samples,
-        "max_eval_perplexity_samples": max_eval_perplexity_samples
-    }
 
     # Check GPU compatibility with bfloat16
     if compute_dtype == torch.float16 and use_4bit:
@@ -349,66 +480,19 @@ def train(training_args):
         modules_to_save=modules_to_save
     )
 
-    if not use_default_gen_config:
-        try:
-            generation_config, unused_config = GenerationConfig.from_pretrained(
-                model_name_or_path, top_k=top_k, do_sample=do_sample, return_unused_kwargs=True,
-                no_repeat_ngram_size=no_repeat_ngram_size, num_beams=num_beams, early_stopping=early_stopping,
-                max_time=max_time, penalty_alpha=penalty_alpha, repetition_penalty=repetition_penalty, temperature=temperature,
-                truncation=not no_truncation, encoder_repetition_penalty=encoder_repetition_penalty, max_length=max_length,
-                max_new_tokens=max_new_tokens, top_p=top_p, use_cache=True, low_memory=True
-            )
-            if len(unused_config) > 0: accelerator.print(f"Unused config: {unused_config}")
-        except Exception as e:
-            warnings.warn(f"The model {model_name_or_path} does not have a generation config")
-            warnings.warn(f"Error message: {e}")
-            generation_config = GenerationConfig.from_dict(config_dict={
-                "top_k": top_k, "do_sample": do_sample, "no_repeat_ngram_size": no_repeat_ngram_size, "num_beams": num_beams, "early_stopping": early_stopping,
-                "max_time": max_time, "penalty_alpha": penalty_alpha, "repetition_penalty": repetition_penalty,  "max_new_tokens": max_new_tokens,
-                "temperature": temperature, "encoder_repetition_penalty": encoder_repetition_penalty,
-                "max_length": max_length, "truncation": not no_truncation, "top_p": top_p, "use_cache": True, "low_memory": True
-            })
-    else:
-        generation_config = GenerationConfig.from_dict(config_dict={"min_new_tokens": 20,
-                                                                    "max_length": context_length,
-                                                                    "max_time": max_time})
-    accelerator.print(f"Model generation config: {generation_config}")
+    # Copy the model to each device
+    # Naive pipeline parallelism
+    device_map = (
+        {"": f"xpu:{accelerator.local_process_index}"}
+        if is_xpu_available()
+        else {"": accelerator.local_process_index}
+    ) if accelerator.distributed_type != DistributedType.NO else "auto"
 
-    qa_dataloader = QADataloader(**dataloader_args)
-    qa_dataloader_instance = qa_dataloader.__call__()
-
-    tokenizer = qa_dataloader.tokenizer
-
-    accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
-    for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
-        accelerator.print("\n==============================================================================\n")
-        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
-        labels = data['labels'].cpu().numpy()
-        labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
-        accelerator.print("\n==============================================================================\n")
-        if idx == 10: break
-
-    try:
-        config = AutoConfig.from_pretrained(
-            model_name_or_path,
-        )
-    except Exception:
-        warnings.warn(f"Model {model_name_or_path} does not have a config.json")
-        config = None
-
-    # System setup info
-    free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
-    max_memory = f'{int(torch.cuda.mem_get_info()[0] / 1024 ** 3) - minimum_free_spaces}GB'
-    n_gpus = torch.cuda.device_count()
-    max_memory = {i: max_memory for i in range(n_gpus)}
-
-    accelerator.print(f"System max memory: {max_memory}\n"
-                      f"System num gpus: {n_gpus}\n"
-                      f"System free in GB: {free_in_GB}")
+    with accelerator.main_process_first():
+        print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
 
     offload_config = {
-        "device_map": "auto",
+        "device_map": device_map,
         "offload_folder": "offload",
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
@@ -422,8 +506,9 @@ def train(training_args):
         "load_in_4bit": use_4bit,
         "torch_dtype": model_dtype,
         "config": config,
-        # "use_flash_attention_2": use_flash_attention_2
     }
+
+    if use_flash_attention_2: full_model_config["use_flash_attention_2"] = True
 
     if "gpt2" in model_name_or_path:
         full_model_config["scale_attn_by_inverse_layer_idx"] = True
@@ -448,7 +533,33 @@ def train(training_args):
             base_model = poor_man_llm_load(model_name_or_path, model_type=task_type,
                                            model_dtype=model_dtype, max_shard_size=max_model_shard_size,
                                            additional_kwargs=full_model_config)
+
     accelerator.print(f"\n  Base model memory footprint: {base_model.get_memory_footprint()}\n")
+
+    if accelerator.distributed_type == DistributedType.NO:
+        max_memory = get_balanced_memory(
+            base_model,
+            max_memory=None,
+            no_split_module_classes=no_split_module_classes,
+            dtype=model_dtype,
+            low_zero=False,
+        )
+
+        accelerator.print(f"\nMax balance memory: {max_memory}\n")
+
+        device_map = infer_auto_device_map(
+            base_model,
+            max_memory=max_memory,
+            no_split_module_classes=no_split_module_classes,
+            dtype=model_dtype
+        )
+
+        accelerator.print(f"\nModel device map to dispatch: {device_map}\n")
+
+        base_model = dispatch_model(base_model,
+                                    device_map=device_map,
+                                    offload_dir="offload",
+                                    )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -457,17 +568,6 @@ def train(training_args):
     accelerator.print(f"Tokenizer vocab size: {len(tokenizer)}")
     if len(tokenizer) > embedding_size:
         base_model.resize_token_embeddings(len(tokenizer))
-
-    if better_transformer:
-        try:
-            base_model = base_model.to_bettertransformer()
-        except Exception as e:
-            warnings.warn(f"This model type {model_name_or_path} is not yet "
-                          f"support for BetterTransformer, please change model type if "
-                          f"you still want to use it.\n Continue running without it...")
-            warnings.warn(f"Error message: {e}")
-            better_transformer = False
-            pass
 
     # Please enable gradient_checkpointing at all cost, this will save your life
     if use_4bit or use_8bit or getattr(base_model, "quantization_method", None) == "gptq":
@@ -496,37 +596,52 @@ def train(training_args):
     if print_model_key:
         accelerator.print(adapter)
 
-    # optimizer
-    decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
-    decay_parameters = [name for name in decay_parameters if "bias" not in name]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in adapter.named_parameters() if n in decay_parameters],
-            "weight_decay": weight_decay,
-        },
-        {
-            "params": [p for n, p in adapter.named_parameters() if n not in decay_parameters],
-            "weight_decay": 0.0,
-        },
-    ]
-
-    # bnb.optim.PagedAdamW8bit
-    optimizer = getattr(bnb.optim, optim_name)(optimizer_grouped_parameters, lr=lr)
-    accelerator.print(f"\nLoading {optim_name} from bits and bytes...")
-
     num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
     max_train_steps = num_epochs * num_update_steps_per_epoch
-    # lr scheduler
-    lr_scheduler = get_scheduler(
-        lr_sheduler_name,
-        optimizer=optimizer,
-        num_warmup_steps=warmup_steps * gradient_accumulation_steps,
-        num_training_steps=max_train_steps * gradient_accumulation_steps,
-    )
 
-    adapter, train_dataloader, optimizer, lr_scheduler = accelerator.prepare(
-        adapter, qa_dataloader_instance['train'], optimizer, lr_scheduler
-    )
+    if getattr(accelerator.state, "fsdp_plugin", None) is not None:
+        accelerator.print(f"FSDP detected, using FSDP...")
+        accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(adapter)
+        if print_model_key:
+            accelerator.print(adapter)
+
+    prepare_dict = {"adapter": adapter,
+                    "train_dataloader": qa_dataloader_instance['train'],
+                    "optim_name": optim_name,
+                    "weight_decay": weight_decay,
+                    "lr": lr,
+                    "lr_sheduler_name": lr_sheduler_name,
+                    "warmup_steps": warmup_steps,
+                    "max_train_steps": max_train_steps}
+
+    if do_eval:
+        if perplexity_eval:
+            prepare_dict["perplexity_eval_dataloader"] = qa_dataloader_instance['eval']['perplexity_eval']
+        if generative_eval:
+            prepare_dict["generative_eval_dataloader"] = qa_dataloader_instance['eval']['generative_eval']
+    else:
+        logger.info("\nEvaluation turn off for this session")
+    if do_test:
+        prepare_dict["test_dataloader"] = qa_dataloader_instance['test']
+    else:
+        logger.info("\nTest turn off for this session")
+
+    accelerator.print("\n Dict items to prepare: \n")
+    for key, value in prepare_dict.items():
+        accelerator.print(f" {key}: {value}\n")
+
+    adapter, optimizer, dataloaders, lr_scheduler = prepare_any(prepare_dict,
+                                                                accelerator.distributed_type,
+                                                                accelerator)
+    train_dataloader = dataloaders['train_dataloader']
+    if do_eval:
+        if "perplexity_eval_dataloader" in dataloaders:
+            perplexity_eval_dataloader = dataloaders["perplexity_eval_dataloader"]
+        if "generative_eval_dataloader" in dataloaders:
+            generative_eval_dataloader = dataloaders["generative_eval_dataloader"]
+    if do_test:
+        if "test_dataloader" in dataloaders:
+            test_dataloader = dataloaders['test_dataloader']
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(qa_dataloader_instance['train']) / gradient_accumulation_steps)
@@ -538,30 +653,77 @@ def train(training_args):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if do_eval:
-        if perplexity_eval:
-            perplexity_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['perplexity_eval'])
-        if generative_eval:
-            generative_eval_dataloader = accelerator.prepare(qa_dataloader_instance['eval']['generative_eval'])
-    else:
-        logger.info("\nEvaluation turn off for this session")
+    if training_args.checkpointing_steps:
+        # Register the LR scheduler
+        accelerator.register_for_checkpointing(lr_scheduler)
+        # Parse out whether we are saving every epoch or after a certain number of batches
+        if hasattr(training_args.checkpointing_steps, "isdigit"):
+            if training_args.checkpointing_steps == "epoch":
+                checkpointing_steps = training_args.checkpointing_steps
+            elif training_args.checkpointing_steps.isdigit():
+                checkpointing_steps = int(training_args.checkpointing_steps)
+            else:
+                raise ValueError(
+                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{training_args.checkpointing_steps}` passed."
+                )
+        else:
+            checkpointing_steps = None
 
-    if do_test:
-        test_dataloader = accelerator.prepare(qa_dataloader_instance['test'])
-    else:
-        logger.info("\nTest turn off for this session")
+    # We need to keep track of how many total steps we have iterated over
+    completed_steps = 0
+    overall_step = 0
+    # We also need to keep track of the stating epoch so files are named properly
+    starting_epoch = 0
 
-    # Register the LR scheduler
-    accelerator.register_for_checkpointing(lr_scheduler)
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if with_tracking:
+        experiment_config = vars(training_args)
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
+        accelerator.init_trackers(PROJECT_NAME, experiment_config)
 
-    # # Save the starting state
-    # accelerator.save_state()
+    if resume_from_checkpoint:
+        if resume_from_checkpoint is not None or resume_from_checkpoint != "":
+            accelerator.print(f"Resumed from checkpoint: {resume_from_checkpoint}")
+            accelerator.load_state(resume_from_checkpoint)
+            path = os.path.basename(resume_from_checkpoint)
+        else:
+            # Get the most recent checkpoint
+            dirs = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
+            dirs.sort(key=os.path.getctime)
+            path = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
+        # Extract `epoch_{i}` or `step_{i}`
+        training_difference = os.path.splitext(path)[0]
 
-    for epoch in tqdm(range(num_epochs), desc="Training progress"):
+        if "epoch" in training_difference:
+            starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+            resume_step = None
+        else:
+            resume_step = int(training_difference.replace("step_", ""))
+            starting_epoch = resume_step // len(train_dataloader)
+            resume_step -= starting_epoch * len(train_dataloader)
+
+    progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
+                              position=accelerator.process_index,
+                              colour="green")
+
+    for epoch in range(starting_epoch, num_epochs):
         with TorchTracemalloc() as tracemalloc:
             adapter.train()
             total_loss = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Training progress epoch {epoch}")):
+            if resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
+                # We need to skip steps until we reach the resumed step
+                active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
+                overall_step += resume_step
+            else:
+                # After the first iteration though, we need to go back to the original dataloader
+                active_dataloader = train_dataloader
+            progress_bar_step = tqdm(total=len(active_dataloader),
+                                     desc=f"Training progress epoch {epoch} on process {accelerator.process_index}",
+                                     position=accelerator.process_index,
+                                     colour="blue")
+            for step, batch in enumerate(active_dataloader):
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
@@ -573,17 +735,45 @@ def train(training_args):
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    accelerator.print(total_loss / step)
+                    rate = progress_bar_step.format_dict["rate"]
+                    remaining = (progress_bar_step.total - progress_bar_step.n) / rate if rate and progress_bar_step.total else 0
+                    current_loss = (total_loss / step).item()
+                    if with_tracking:
+                        accelerator.log(
+                            {
+                                "current_loss_batch": current_loss,
+                                "overall_steps": overall_step,
+                                "Elapsed(hours)": progress_bar_step.format_dict['elapsed'] / 60 / 60,
+                                "Time_left(hours)": round(remaining / 60 / 60, 3),
+                                "learning_rate": lr_scheduler.get_last_lr()[0]
+                            },
+                            step=completed_steps
+                        )
+                    completed_steps += 1
+                    tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
+                    progress_bar_step.desc = f"Training progress epoch {epoch} process {accelerator.process_index}|L-{round(current_loss, 4)}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
                     del loss, outputs, batch
 
-                # if isinstance(checkpointing_steps, int):
-                #     if completed_steps % checkpointing_steps == 0:
-                #         output_dir = f"step_{completed_steps}"
-                #         if args.output_dir is not None:
-                #             output_dir = os.path.join(args.output_dir, output_dir)
-                #         accelerator.save_state(output_dir)
-                # if completed_steps >= args.max_train_steps:
-                #     break
+                overall_step += 1
+                progress_bar_step.update(1)
+
+                if isinstance(checkpointing_steps, int):
+                    if overall_step % checkpointing_steps == 0:
+                        output_cpkt_dir = f"step_{overall_step}"
+                        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
+                        accelerator.save_state(output_dir)
+                        if accelerator.is_main_process and training_args.log_weights_cpkt:
+                            if training_args.with_tracking and training_args.log_weights_cpkt:
+                                if training_args.report_to == "wandb":
+                                    wandb_artifact = wandb.Artifact(
+                                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
+                                        type='model',
+                                        description="Model checkpoint for VQA")
+                            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
+                            wandb_artifact.add_dir(output_dir)
+                            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
+
+        progress_bar_epoch.update(1)
 
         # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
         accelerator.print("GPU Memory before entering the train : {}".format(b2mb(tracemalloc.begin)))
@@ -607,32 +797,61 @@ def train(training_args):
         train_ppl = torch.exp(train_epoch_loss)
         accelerator.print(f"{epoch=}: {train_ppl=} {train_epoch_loss=}")
 
+        if checkpointing_steps == "epoch":
+            output_dir = f"epoch_{epoch}"
+            output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
+            accelerator.save_state(output_dir)
+
+        def save_push():
+            accelerator.wait_for_everyone()
+            unwrapped_adapter = accelerator.unwrap_model(adapter)
+            unwrapped_adapter.save_pretrained(dataset_name,
+                                              is_main_process=accelerator.is_main_process,
+                                              save_function=accelerator.save,
+                                              state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                                              )
+            if accelerator.is_main_process:
+                unwrapped_adapter.push_to_hub(
+                    "1TuanPham/"
+                    + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                        "/",
+                        "_"),
+                    state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                    use_auth_token=True,
+                )
+            accelerator.wait_for_everyone()
+            if with_tracking:
+                accelerator.end_training()
+
+        if num_epochs - starting_epoch == 1:
+            save_push()
+
         # TODO: Refactor evaluation
         if do_eval:
             cur_time = '_'.join(str(datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')).split())
             if merge_weight_eval:
                 if not getattr(base_model, "quantization_method", None) == "gptq":
                     accelerator.print(f"Merging model for faster inference...")
+                    accelerator.wait_for_everyone()
                     inference_model = merge_adapter(model_name_or_path,
-                                                    peft_adapter=adapter,
+                                                    peft_adapter=accelerator.unwrap_model(adapter),
                                                     adapter_save_path=f"src/models/adapters/{dataset_name}-e{epoch}-{cur_time}",
                                                     main_process=accelerator.is_main_process, adapter_name=dataset_name,
                                                     model_type=task_type,
                                                     model_dtype=model_dtype,
-                                                    better_transformer=better_transformer,
                                                     shard_model=shard_model_merge,
-                                                    max_memory={0: "0.3GB"},
-                                                    max_shard_size=max_model_shard_size)
+                                                    max_memory=max_memory,
+                                                    max_shard_size=max_model_shard_size,
+                                                    no_split_module_classes=no_split_module_classes,
+                                                    accelerator=accelerator)
                 else:
                     warnings.warn(
                         f"The model {model_name_or_path} is gptq quantized and cannot be merged to LORA layers.\n"
                         f"Skipping merge_weight_eval...")
             else:
                 warnings.warn(f"Weight from peft not merged yet, this may result in slower inference")
-                # deepcopy since using torch.autocast which will auto cast if there is a mismatch between lora adatper
-                # and the base model dtype, deepcopy ensure that any modified inference_model dtype will not affect
-                # the base model and adapter dtype
-                inference_model = deepcopy(adapter)
+                accelerator.wait_for_everyone()
+                inference_model = accelerator.unwrap_model(adapter)
 
             if deep_speed_inf:
                 world_size = int(os.getenv('WORLD_SIZE', str(torch.cuda.device_count())))
@@ -651,21 +870,22 @@ def train(training_args):
                 } if auto_kernel_injection or injection_policy else {}
 
                 inference_model = deepspeed.init_inference(
-                    accelerator.unwrap_model(inference_model),
+                    inference_model,
                     mp_size=world_size,
                     **injection_config
                 )
 
             inference_model.eval()
             if task_type == "SEQ_2_SEQ_LM" and generative_eval:
-                torch.backends.cuda.enable_mem_efficient_sdp(False)
-                torch.backends.cuda.enable_flash_sdp(False)
                 eval_preds = []
                 if generative_eval:
                     with TorchTracemalloc() as tracemalloc:
                         with torch.no_grad():
                             for idx, batch in enumerate(
-                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
+                                    tqdm(generative_eval_dataloader,
+                                         desc=f"Evaluating epoch {epoch} generative on process {accelerator.process_index}",
+                                         position=accelerator.process_index,
+                                         colour="blue")):
                                 # Pass dummy batch to avoid caffe error
                                 if idx == 0 and accelerator.distributed_type != DistributedType.NO:
                                     inference_model(**batch)
@@ -734,27 +954,31 @@ def train(training_args):
                     pass
 
             elif task_type == "CAUSAL_LM":
-                torch.backends.cuda.enable_mem_efficient_sdp(False)
-                torch.backends.cuda.enable_flash_sdp(False)
                 eval_preds = []
                 if generative_eval:
                     with TorchTracemalloc() as tracemalloc:
                         with torch.no_grad():
-                            for idx, batch in enumerate(
-                                    tqdm(generative_eval_dataloader, desc=f"Evaluating epoch {epoch} generative")):
-                                # Pass dummy batch to avoid caffe error
-                                if idx == 0 and accelerator.distributed_type != DistributedType.NO:
-                                    inference_model(**batch)
-                                batch = {k: v for k, v in batch.items() if k != "labels"}
-                                with torch.no_grad():
-                                    outputs = inference_model.generate(
-                                        **batch, generation_config=generation_config,
-                                        synced_gpus=True if accelerator.distributed_type != DistributedType.NO else False,
-                                        pad_token_id=tokenizer.pad_token_id
-                                    )  # synced_gpus=True for Distributed training
-                                outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
-                                preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                            with autocast():
+                                with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False,
+                                                                    enable_mem_efficient=False):
+                                    for idx, batch in enumerate(
+                                            tqdm(generative_eval_dataloader,
+                                                 desc=f"Evaluating epoch {epoch} generative on process {accelerator.process_index}",
+                                                 position=accelerator.process_index,
+                                                 colour="blue")):
+                                        # Pass dummy batch to avoid caffe error
+                                        if idx == 0 and accelerator.distributed_type != DistributedType.NO:
+                                            inference_model(**batch)
+                                        batch = {k: v for k, v in batch.items() if k != "labels"}
+                                        with torch.no_grad():
+                                            outputs = inference_model.generate(
+                                                **batch, generation_config=generation_config,
+                                                synced_gpus=accelerator.distributed_type != DistributedType.NO,
+                                                pad_token_id=tokenizer.pad_token_id
+                                            )  # synced_gpus=True for Distributed training
+                                        outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
+                                        preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
+                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -784,7 +1008,9 @@ def train(training_args):
                     inference_model.eval()
                     losses = []
                     for step, batch in enumerate(tqdm(perplexity_eval_dataloader,
-                                                      desc=f"Evaluating epoch {epoch} perplexity")):
+                                                      desc=f"Evaluating epoch {epoch} perplexity",
+                                                      position=accelerator.process_index,
+                                                      colour="blue")):
                         with torch.no_grad():
                             outputs = inference_model(**batch)
 
@@ -839,17 +1065,7 @@ def train(training_args):
             shutil.rmtree('offload_inf') if os.path.exists("offload_inf") else None
             gc.collect()
 
-    accelerator.wait_for_everyone()
-    # if better_transformer:
-    #     adapter = adapter.reverse_bettertransformer()
-    adapter.save_pretrained(dataset_name)
-    adapter.push_to_hub(
-        "1TuanPham/"
-        + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace("/", "_"),
-        state_dict=accelerator.get_state_dict(adapter),
-        use_auth_token=True,
-    )
-    accelerator.wait_for_everyone()
+    save_push()
 
 
 if __name__ == "__main__":

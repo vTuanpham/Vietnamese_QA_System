@@ -8,7 +8,27 @@ sys.path.insert(0,r'./')
 from functools import wraps
 
 import torch
+import torch.distributed as dist
 import numpy as np
+
+
+def dist_print(string: str):
+    if dist.is_initialized():
+        # Running in a distributed setting (multiple processes)
+        if dist.get_rank() == 0:
+            # Main process (rank 0)
+            print(string)
+    else:
+        # Running in a single-process setting
+        print(string)
+
+
+def in_notebook():
+    """
+    Returns ``True`` if the module is running in IPython kernel,
+    ``False`` if in IPython shell or other Python shell.
+    """
+    return 'ipykernel' in sys.modules
 
 
 def set_seed(value):

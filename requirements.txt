@@ -72,3 +72,4 @@ mpi4py
 trl
 icecream
 txtai
+wandb

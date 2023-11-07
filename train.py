@@ -7,6 +7,8 @@ from transformers import models, SchedulerType
 
 import deepspeed.module_inject as module_inject
 
+from src.data import QADataloader
+from src.data.configs import AdvanceInstructSample
 from src.models.trainer import train
 
 
@@ -24,6 +26,9 @@ def parse_arguments():
     model_group.add_argument("--use_flash_attention_2", action="store_true", help="Enable flash attention 2 or not"
                                                                              "More info: https://huggingface.co/docs/transformers/perf_infer_gpu_one")
     model_group.add_argument("--better_transformer", action='store_true', help="Enable flash attention")
+    model_group.add_argument("--no_split_module_classes", nargs='+', type=str, default=None,
+                             help="A list of layer class names that should never be split across device "
+                                  "(for instance any layer that has a residual connection).")
 
     peft_group = parser.add_argument_group("Parameters efficient arguments")
     peft_group.add_argument("--lora_r", type=int, default=8, help="LoRA attention dimension")
@@ -45,6 +50,19 @@ def parse_arguments():
     bitsandbytes_group.add_argument("--use_8bit", action='store_true', help="Activate 8-bit precision base model loading")
 
     training_group = parser.add_argument_group("Training configs group")
+    training_group.add_argument("--log_weights_cpkt", action="store_true", help="Whether to log checkpoint to wandb")
+    training_group.add_argument("--with_tracking", action="store_true", help="Whether to enable experiment trackers for logging.")
+    training_group.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
+    training_group.add_argument(
+        "--report_to",
+        type=str,
+        default="wandb",
+        help=(
+            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
+            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
+            "Only applicable when `--with_tracking` is passed."
+        ),
+    )
     training_group.add_argument("--optim_name", type=str, default="PagedLion8bit", help="Name of optimizer in bnb lib")
     training_group.add_argument("--weight_decay", type=float, default=0.2, help="Weight decay")
     training_group.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
@@ -63,7 +81,10 @@ def parse_arguments():
     training_group.add_argument("--enable_model_offload", action='store_true', help="Enable model offload")
     training_group.add_argument("--minimum_free_spaces", type=int, default=1, help="Minimum free spaces to keep in GB")
     training_group.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
-    training_group.add_argument("--resume_from_checkpoint")
+    training_group.add_argument("--resume_from_checkpoint", type=str,
+                                default=None, help="If the training should continue from a checkpoint folder.")
+    training_group.add_argument("--checkpointing_steps", type=str, default=None, help="How often should we save"
+                                                                                      "state for resume")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
@@ -198,4 +219,37 @@ def parse_arguments():
 
 if __name__=="__main__":
     args = parse_arguments()
-    train(args)
+
+    dataloader_args = {
+        "model_name": args.model_name_or_path,
+        "text_column": args.text_column,
+        "target_column": args.label_column,
+        "train_file": args.train_file,
+        "each_train_file_percentage": args.each_train_file_percentage,
+        "val_file": args.val_file,
+        "test_file": args.test_file,
+        "train_batch_size": args.train_batch_size,
+        "perplexity_eval_batch_size": args.perplexity_eval_batch_size,
+        "generative_eval_batch_size": args.generative_eval_batch_size,
+        "seed": args.seed,
+        "max_train_samples": args.max_train_samples,
+        "max_eval_samples": args.max_eval_samples,
+        "max_predict_samples": args.max_predict_samples,
+        "config_type": AdvanceInstructSample,
+        "task_type": args.model_type,
+        "block_size": args.block_size,
+        "no_preprocess_data": args.no_preprocess_data,
+        "do_group_texts": args.do_group_texts,
+        "do_perplexity_eval": args.do_perplexity_eval,
+        "do_generative_eval": args.do_generative_eval,
+        "model_max_length": args.model_max_length,
+        "context_length": args.context_length,
+        "response_template": args.response_template,
+        "max_eval_generative_samples": args.max_eval_generative_samples,
+        "max_eval_perplexity_samples": args.max_eval_perplexity_samples
+    }
+
+    qa_dataloader = QADataloader(**dataloader_args)
+    qa_dataloader_instance = qa_dataloader.__call__()
+
+    train(args, qa_dataloader, qa_dataloader_instance)
