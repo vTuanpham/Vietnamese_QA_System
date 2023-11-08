@@ -706,12 +706,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                 starting_epoch = resume_step // len(train_dataloader)
                 resume_step -= starting_epoch * len(train_dataloader)
         else:
-            starting_epoch = 0,
             resume_step = None
-
-    progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
-                              position=accelerator.process_index,
-                              colour="green")
 
     def save_push():
         accelerator.wait_for_everyone()
@@ -733,6 +728,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         accelerator.wait_for_everyone()
         if with_tracking:
             accelerator.end_training()
+
+    progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
+                              position=accelerator.process_index,
+                              colour="green")
 
     for epoch in range(starting_epoch, num_epochs):
         with TorchTracemalloc() as tracemalloc:
