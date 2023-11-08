@@ -85,6 +85,8 @@ def parse_arguments():
                                 default=None, help="If the training should continue from a checkpoint folder.")
     training_group.add_argument("--checkpointing_steps", type=str, default=None, help="How often should we save"
                                                                                       "state for resume")
+    training_group.add_argument('--override_last_cpkt_step', action='store_true',
+                                help="Override last cpkt step and epoch")
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")

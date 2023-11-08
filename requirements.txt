@@ -1,5 +1,5 @@
 accelerate
-bitsandbytes
+bitsandbytes==0.41.1
 datasets
 deepspeed
 googletrans==3.1.0a0

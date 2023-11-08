@@ -693,20 +693,46 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             dirs = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
             dirs.sort(key=os.path.getctime)
             path = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
-        # Extract `epoch_{i}` or `step_{i}`
-        training_difference = os.path.splitext(path)[0]
 
-        if "epoch" in training_difference:
-            starting_epoch = int(training_difference.replace("epoch_", "")) + 1
-            resume_step = None
+        if not training_args.override_last_cpkt_step:
+            # Extract `epoch_{i}` or `step_{i}`
+            training_difference = os.path.splitext(path)[0]
+
+            if "epoch" in training_difference:
+                starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+                resume_step = None
+            else:
+                resume_step = int(training_difference.replace("step_", ""))
+                starting_epoch = resume_step // len(train_dataloader)
+                resume_step -= starting_epoch * len(train_dataloader)
         else:
-            resume_step = int(training_difference.replace("step_", ""))
-            starting_epoch = resume_step // len(train_dataloader)
-            resume_step -= starting_epoch * len(train_dataloader)
+            starting_epoch = 0,
+            resume_step = None
 
     progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
                               position=accelerator.process_index,
                               colour="green")
+
+    def save_push():
+        accelerator.wait_for_everyone()
+        unwrapped_adapter = accelerator.unwrap_model(adapter)
+        unwrapped_adapter.save_pretrained(dataset_name,
+                                          is_main_process=accelerator.is_main_process,
+                                          save_function=accelerator.save,
+                                          state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                                          )
+        if accelerator.is_main_process:
+            unwrapped_adapter.push_to_hub(
+                "1TuanPham/"
+                + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                    "/",
+                    "_"),
+                state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                use_auth_token=True,
+            )
+        accelerator.wait_for_everyone()
+        if with_tracking:
+            accelerator.end_training()
 
     for epoch in range(starting_epoch, num_epochs):
         with TorchTracemalloc() as tracemalloc:
@@ -801,27 +827,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             output_dir = f"epoch_{epoch}"
             output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
             accelerator.save_state(output_dir)
-
-        def save_push():
-            accelerator.wait_for_everyone()
-            unwrapped_adapter = accelerator.unwrap_model(adapter)
-            unwrapped_adapter.save_pretrained(dataset_name,
-                                              is_main_process=accelerator.is_main_process,
-                                              save_function=accelerator.save,
-                                              state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-                                              )
-            if accelerator.is_main_process:
-                unwrapped_adapter.push_to_hub(
-                    "1TuanPham/"
-                    + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
-                        "/",
-                        "_"),
-                    state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-                    use_auth_token=True,
-                )
-            accelerator.wait_for_everyone()
-            if with_tracking:
-                accelerator.end_training()
 
         if num_epochs - starting_epoch == 1:
             save_push()
