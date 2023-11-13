@@ -380,6 +380,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     resume_from_checkpoint = training_args.resume_from_checkpoint
     report_to = training_args.report_to
     with_tracking = training_args.with_tracking
+    convert_cpkt = training_args.convert_cpkt
 
     set_seed(seed)
 
@@ -728,6 +729,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         accelerator.wait_for_everyone()
         if with_tracking:
             accelerator.end_training()
+
+    if resume_from_checkpoint and convert_cpkt:
+        save_push()
+        return True
 
     progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
                               position=accelerator.process_index,

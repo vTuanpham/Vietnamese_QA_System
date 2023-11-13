@@ -87,6 +87,8 @@ def parse_arguments():
                                                                                       "state for resume")
     training_group.add_argument('--override_last_cpkt_step', action='store_true',
                                 help="Override last cpkt step and epoch")
+    training_group.add_argument('--convert_cpkt', action='store_true', help='Convert checkpoint into model and push to'
+                                                                            'hub')
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
@@ -131,7 +133,7 @@ def parse_arguments():
     dataloader_group.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
     dataloader_group.add_argument("--max_eval_generative_samples", type=int, default=50, help="Max generative examplew for manual evaluation")
     dataloader_group.add_argument("--do_generative_eval", action="store_true", help="Flag to enable model.generate eval")
-    dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=500, help="Max evaluation examples for perplexity evaluation")
+    dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=50, help="Max evaluation examples for perplexity evaluation")
 
     generation_group = parser.add_argument_group("Generation Arguments")
     generation_group.add_argument("--top_k", type=int, default=50, help="Top-k value ")
