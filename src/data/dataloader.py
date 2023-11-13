@@ -260,7 +260,8 @@ class QADataloader:
                                           do_perplexity_eval=self.do_perplexity_eval,
                                           do_generative_eval=self.do_generative_eval)
             if self.do_generative_eval or self.task_type == "SEQ_2_SEQ_LM":
-                eval_dataset_input = random.sample(list(eval_dataset), min(self.max_eval_generative_samples, len(eval_dataset)))
+                # eval_dataset_input = random.sample(list(eval_dataset), min(self.max_eval_generative_samples, len(eval_dataset)))
+                eval_dataset_input = eval_dataset[:self.max_eval_generative_samples]
                 eval_dataset_input = eval_dataset_input if self.no_preprocess_data else self.preprocess_data(eval_dataset_input)
                 dataloaders['eval']['generative_eval'] = self.get_dataloader(eval_dataset_input,
                                                                              batch_size=self.generative_eval_batch_size)
