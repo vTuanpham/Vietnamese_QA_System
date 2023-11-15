@@ -44,7 +44,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                  translate_via: str = 'ggapi',
                  target_fields: List[str] = ['question_text', 'orig_answer_texts'],
                  target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceInstructSample,
-                 max_example_per_thread: int = 100,
+                 max_example_per_thread: int = 400,
                  large_chunks_threshold: int = 20000,
                  no_translated_code: bool = False) -> None:
         self.data_read = None
@@ -107,18 +107,19 @@ class DataParser(metaclass=ForceBaseCallMeta):
         for idx, example in enumerate(tqdm(self.converted_data, desc="Validating data for translation:")):
             for key in self.target_fields:
                 if self.no_translated_code:
+                    example_filters = 0
                     contain_code, score, found_elements = have_code(example[key])
                     if contain_code:
-                        warnings.warn(f"Example {idx} with ID: {example['qas_id']} contain code with score {score},"
-                                      " This example will not be included in the translation data.\n"
-                                      f"Detected word: {found_elements}")
+                        example_filters += 1
+                        if len(self.converted_data) - 1 == idx:
+                            tqdm.write(f"Number of example with code: {example_filters}")
                         break
                     elif key == self.target_fields[-1]:
                         validated_translate_data.append(example)
                 else:
                     if key == self.target_fields[-1]: validated_translate_data.append(example)
 
-        print(f"Total data left after filtering for translation: {len(validated_translate_data)}")
+        print(f"\nTotal data left after filtering for translation: {len(validated_translate_data)}\n")
         self.converted_data = validated_translate_data
 
     @staticmethod
