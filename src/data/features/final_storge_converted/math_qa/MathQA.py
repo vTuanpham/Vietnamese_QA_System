@@ -20,6 +20,13 @@ class MathQA(DataParser):
         self.target_config = AdvanceInstructSample
         self.target_fields = ['question_text', 'orig_answer_texts']
 
+    @staticmethod
+    def remove_quotes(input_string):
+        if input_string.startswith('"') and input_string.endswith('"'):
+            return input_string[1:-1]
+        else:
+            return input_string
+
     def read(self):
         super(MathQA, self).read()
         self.data_read = load_dataset("math_qa")
@@ -83,8 +90,8 @@ class MathQA(DataParser):
                 data_dict['question_text'] += f"\n Here are the options, please choose one answer only:\n"
                 data_dict['question_text'] += data['options']
 
-                data_dict['orig_answer_texts'] = f"{data['correct']}\n"
-                data_dict['orig_answer_texts'] += f"\n{data['Rationale']}"
+                data_dict['orig_answer_texts'] = f"\n {self.remove_quotes(data['Rationale'])}"
+
                 data_dict['answer_lengths'] = None
                 data_converted.append(data_dict)
 

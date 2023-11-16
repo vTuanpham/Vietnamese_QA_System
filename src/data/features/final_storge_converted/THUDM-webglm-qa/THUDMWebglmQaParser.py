@@ -32,26 +32,26 @@ class WebglmQA(DataParser):
 
         data_converted = []
         lfqa_prefixs = [
-            "\n\n Here are some relevant documents, which may or may not be applicable to the previous question. If you use this information, please indicate 'Based on the provided documents':\n",
-            "\n\n Below are some pertinent documents, which may or may not relate to the previous question. If you utilize this information, kindly mention 'In reference to the provided documents':\n",
-            "\n\n The following documents may or may not be relevant to the previous question. If you choose to incorporate this information, please acknowledge with 'Based on the provided documents':\n",
-            "\n\n Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please state 'Based on the documents provided':\n",
-            "\n\n These documents may or may not have relevance to the previous question. If you decide to use them, kindly acknowledge with 'In reference to the provided documents':\n",
-            "\n\n Here are some documents that might be of interest in relation to the previous question. If you opt to use them, please mention 'Based on the provided documents':\n",
-            "\n\n The following documents may or may not pertain to the previous question. If you incorporate this information, kindly indicate 'In reference to the provided documents':\n",
-            "\n\n Here are some relevant documents, which may or may not have relevance to the previous question. If you use this information, please acknowledge with 'Based on the provided documents':\n",
-            "\n\n Below are some pertinent documents that may or may not be applicable to the previous question. If you choose to incorporate this information, please state 'In reference to the provided documents':\n",
-            "\n\n The following documents may or may not relate to the previous question. If you decide to use them, kindly mention 'Based on the provided documents':\n",
-            "\n\n Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please acknowledge with 'In reference to the provided documents':\n",
-            "\n\n These documents may or may not have relevance to the previous question. If you opt to use them, please state 'Based on the documents provided':\n",
-            "\n\n Here are some documents that might be of interest in relation to the previous question. If you choose to use them, kindly indicate 'In reference to the provided documents':\n",
-            "\n\n The following documents may or may not pertain to the previous question. If you incorporate this information, please acknowledge with 'Based on the provided documents':\n",
-            "\n\n Here are some relevant documents, which may or may not have relevance to the previous question. If you use this information, please indicate 'In reference to the provided documents':\n",
-            "\n\n Below are some pertinent documents that may or may not be applicable to the previous question. If you opt to use this information, please state 'Based on the provided documents':\n",
-            "\n\n The following documents may or may not relate to the previous question. If you decide to use them, kindly mention 'In reference to the provided documents':\n",
-            "\n\n Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please acknowledge with 'Based on the documents provided':\n",
-            "\n\n These documents may or may not have relevance to the previous question. If you choose to use them, please indicate 'In reference to the provided documents':\n",
-            "\n\n Here are some documents that might be of interest in relation to the previous question. If you opt to use them, kindly state 'Based on the provided documents':\n",
+            "Here are some relevant documents, which may or may not be applicable to the question. If you use this information, please indicate 'Based on the provided documents':\n",
+            "Below are some pertinent documents, which may or may not relate to the question. If you utilize this information, kindly mention 'In reference to the provided documents':\n",
+            "The following documents may or may not be relevant to the question. If you choose to incorporate this information, please acknowledge with 'Based on the provided documents':\n",
+            "Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please state 'Based on the documents provided':\n",
+            "These documents may or may not have relevance to the question. If you decide to use them, kindly acknowledge with 'In reference to the provided documents':\n",
+            "Here are some documents that might be of interest in relation to the question. If you opt to use them, please mention 'Based on the provided documents':\n",
+            "The following documents may or may not pertain to the question. If you incorporate this information, kindly indicate 'In reference to the provided documents':\n",
+            "Here are some relevant documents, which may or may not have relevance to the question. If you use this information, please acknowledge with 'Based on the provided documents':\n",
+            "Below are some pertinent documents that may or may not be applicable to the question. If you choose to incorporate this information, please state 'In reference to the provided documents':\n",
+            "The following documents may or may not relate to the question. If you decide to use them, kindly mention 'Based on the provided documents':\n",
+            "Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please acknowledge with 'In reference to the provided documents':\n",
+            "These documents may or may not have relevance to the question. If you opt to use them, please state 'Based on the documents provided':\n",
+            "Here are some documents that might be of interest in relation to the question. If you choose to use them, kindly indicate 'In reference to the provided documents':\n",
+            "The following documents may or may not pertain to the question. If you incorporate this information, please acknowledge with 'Based on the provided documents':\n",
+            "Here are some relevant documents, which may or may not have relevance to the question. If you use this information, please indicate 'In reference to the provided documents':\n",
+            "Below are some pertinent documents that may or may not be applicable to the question. If you opt to use this information, please state 'Based on the provided documents':\n",
+            "The following documents may or may not relate to the question. If you decide to use them, kindly mention 'In reference to the provided documents':\n",
+            "Here are some documents that could be useful for the question at hand. It's up to you whether or not to use them. If you do, please acknowledge with 'Based on the documents provided':\n",
+            "These documents may or may not have relevance to the question. If you choose to use them, please indicate 'In reference to the provided documents':\n",
+            "Here are some documents that might be of interest in relation to the question. If you opt to use them, kindly state 'Based on the provided documents':\n",
         ]
         lfqa_system_prompts = [
             "You are an AI assistant specializing in Question Answering. Please answer the following question based on the provided documents.",
@@ -108,10 +108,21 @@ class WebglmQA(DataParser):
             "Taking the information in the documents into consideration, ",
             "Using the documents as a source, ",
             "Incorporating data from the documents, ",
-            "",
-            "",
-            "",
-            ""
+            "As per the documents, ",
+            "In alignment with the provided documents, ",
+            "According to the information found in the documents, ",
+            "Drawing insights from the documents, ",
+            "Incorporating facts from the provided documents, ",
+            "With the documents serving as a guide, ",
+            "Keeping in view the contents of the documents, ",
+            "Building on the information presented in the documents, ",
+            "In light of the materials provided, ",
+            "Considering the details in the documents, ",
+            "In conformity with the documents, ",
+            "Taking cues from the provided documents, ",
+            "With the documents as a point of reference, ",
+            "In view of the information contained in the documents, ",
+            "In line with the documents, ",
         ]
         for split in self.data_read:
             for data in tqdm(self.data_read[split], desc=f"Converting {split} data"):
@@ -121,9 +132,10 @@ class WebglmQA(DataParser):
                 data_dict['qas_id'] = self.id_generator(size=6)
 
                 lfqa_prefix = random.choice(lfqa_prefixs)
-                data_dict['question_text'] = data['question'] + lfqa_prefix
-                for ref in data['references']:
-                    data_dict['question_text'] += ref + "\n\n"
+                data_dict['question_text'] = lfqa_prefix
+                for idx, ref in enumerate(data['references']):
+                    data_dict['question_text'] += f"Document {idx+1}:" + ref + "\n\n"
+                data_dict['question_text'] += f"Question: {data['question']}"
                 lfqa_response_prefix = random.choice(lfqa_response_prefixs)
                 data_dict['orig_answer_texts'] = lfqa_response_prefix + data['answer']
 
