@@ -4,6 +4,7 @@ import os
 import random
 import shutil
 import logging
+import time
 import warnings
 import datetime
 from typing import List
@@ -281,6 +282,7 @@ class TorchTracemalloc:
 @record
 @timeit
 def train(training_args, qa_dataloader, qa_dataloader_instance):
+    start_time = time.time()
     send_example_telemetry(training_args.dataset_name, training_args)
 
     accelerator_log_kwargs = {}
@@ -381,6 +383,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     report_to = training_args.report_to
     with_tracking = training_args.with_tracking
     convert_cpkt = training_args.convert_cpkt
+    checkpointing_steps = training_args.checkpointing_steps
+    checkpoint_at_max_time = training_args.checkpoint_at_max_time
 
     set_seed(seed)
 
@@ -654,18 +658,18 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if training_args.checkpointing_steps:
+    if checkpointing_steps:
         # Register the LR scheduler
         accelerator.register_for_checkpointing(lr_scheduler)
         # Parse out whether we are saving every epoch or after a certain number of batches
-        if hasattr(training_args.checkpointing_steps, "isdigit"):
-            if training_args.checkpointing_steps == "epoch":
-                checkpointing_steps = training_args.checkpointing_steps
-            elif training_args.checkpointing_steps.isdigit():
-                checkpointing_steps = int(training_args.checkpointing_steps)
+        if hasattr(checkpointing_steps, "isdigit"):
+            if checkpointing_steps == "epoch":
+                checkpointing_steps = checkpointing_steps
+            elif checkpointing_steps.isdigit():
+                checkpointing_steps = int(checkpointing_steps)
             else:
                 raise ValueError(
-                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{training_args.checkpointing_steps}` passed."
+                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{checkpointing_steps}` passed."
                 )
         else:
             checkpointing_steps = None
@@ -763,6 +767,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     lr_scheduler.step()
                     optimizer.zero_grad()
 
+                overall_step += 1
+                progress_bar_step.update(1)
+                elapsed_time = (time.time() - start_time) / 3600
+
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     rate = progress_bar_step.format_dict["rate"]
@@ -781,17 +789,15 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                         )
                     completed_steps += 1
                     tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
-                    progress_bar_step.desc = f"Training progress epoch {epoch} process {accelerator.process_index}|L-{round(current_loss, 4)}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
+                    progress_bar_step.desc = f"Training progress E:{epoch}|P:{accelerator.process_index}|L:{round(current_loss, 4)}|S:{completed_steps}|T:{round(remaining/60/60, 3)}h|Elapsed:{round(elapsed_time, 2)}"
                     del loss, outputs, batch
 
-                overall_step += 1
-                progress_bar_step.update(1)
-
-                if isinstance(checkpointing_steps, int):
-                    if overall_step % checkpointing_steps == 0:
+                if isinstance(checkpointing_steps, int) or isinstance(checkpoint_at_max_time, float):
+                    if overall_step % checkpointing_steps == 0 or elapsed_time >= checkpoint_at_max_time:
                         output_cpkt_dir = f"step_{overall_step}"
                         output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
                         accelerator.save_state(output_dir)
+                        checkpoint_at_max_time += training_args.checkpoint_at_max_time
                         if accelerator.is_main_process and training_args.log_weights_cpkt:
                             if training_args.with_tracking and training_args.log_weights_cpkt:
                                 if training_args.report_to == "wandb":
