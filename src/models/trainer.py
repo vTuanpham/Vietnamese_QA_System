@@ -656,8 +656,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if checkpointing_steps or checkpoint_at_max_time:
-        # Register the LR scheduler
+    if checkpointing_steps or checkpoint_at_max_time or resume_from_checkpoint:
         accelerator.register_for_checkpointing(lr_scheduler)
         # Parse out whether we are saving every epoch or after a certain number of batches
         if hasattr(checkpointing_steps, "isdigit"):
