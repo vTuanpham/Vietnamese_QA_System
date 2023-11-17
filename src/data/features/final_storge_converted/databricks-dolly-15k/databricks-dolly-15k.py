@@ -1,12 +1,7 @@
-import json
 import sys
 import random
 sys.path.insert(0,r'./')
-import os
 from tqdm.auto import tqdm
-
-from typing import List, Dict, Union
-from functools import partialmethod
 
 from datasets import load_dataset
 
@@ -23,8 +18,7 @@ class DataBricksDolly15k(DataParser):
                          parser_type=PARSER_TYPE,
                          do_translate=True,
                          no_translated_code=True,
-                         max_example_per_thread=300,
-                         large_chunks_threshold=3000)
+                         )
         self.target_config = AdvanceInstructSample
         self.target_fields = ['question_text', 'orig_answer_texts']
 
@@ -71,7 +65,7 @@ class DataBricksDolly15k(DataParser):
 
                 if len(data['context']) != 0:
                     doc_prefix = random.choice(docs_prefix)
-                    data_dict['question_text'] = data['instruction'] + "\n " + f" {doc_prefix} \n" + data['context']
+                    data_dict['question_text'] = f"{doc_prefix} \n" + data['context'] + "\n " + data['instruction']
                 else:
                     data_dict['question_text'] = data['instruction']
 

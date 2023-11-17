@@ -44,7 +44,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                  translate_via: str = 'ggapi',
                  target_fields: List[str] = ['question_text', 'orig_answer_texts'],
                  target_config: Union[AdvanceQAExample, AdvanceInstructSample] = AdvanceInstructSample,
-                 max_example_per_thread: int = 100,
+                 max_example_per_thread: int = 400,
                  large_chunks_threshold: int = 20000,
                  no_translated_code: bool = False) -> None:
         self.data_read = None
@@ -107,18 +107,19 @@ class DataParser(metaclass=ForceBaseCallMeta):
         for idx, example in enumerate(tqdm(self.converted_data, desc="Validating data for translation:")):
             for key in self.target_fields:
                 if self.no_translated_code:
+                    example_filters = 0
                     contain_code, score, found_elements = have_code(example[key])
                     if contain_code:
-                        warnings.warn(f"Example {idx} with ID: {example['qas_id']} contain code with score {score},"
-                                      " This example will not be included in the translation data.\n"
-                                      f"Detected word: {found_elements}")
+                        example_filters += 1
+                        if len(self.converted_data) - 1 == idx:
+                            tqdm.write(f"Number of example with code: {example_filters}")
                         break
                     elif key == self.target_fields[-1]:
                         validated_translate_data.append(example)
                 else:
                     if key == self.target_fields[-1]: validated_translate_data.append(example)
 
-        print(f"Total data left after filtering for translation: {len(validated_translate_data)}")
+        print(f"\nTotal data left after filtering for translation: {len(validated_translate_data)}\n")
         self.converted_data = validated_translate_data
 
     @staticmethod
@@ -225,10 +226,10 @@ class DataParser(metaclass=ForceBaseCallMeta):
             num_large_chunks = len(converted_data) / self.large_chunks_threshold
             large_chunks = [converted_data[x:x + self.large_chunks_threshold] for x in
                             range(0, len(converted_data), self.large_chunks_threshold)]
-            print(f" Data is way too large, spliting data into {num_large_chunks} large chunk for sequential translation")
+            tqdm.write(f" Data is way too large, spliting data into {num_large_chunks} large chunk for sequential translation")
 
             for idx, large_chunk in enumerate(tqdm(large_chunks, desc=f"Translating large chunk ")):
-                print(f" Processing large chunk No: {idx}")
+                tqdm.write(f" Processing large chunk No: {idx}")
                 self.translate_converted(large_chunk=large_chunk)
             return None
 
@@ -237,8 +238,8 @@ class DataParser(metaclass=ForceBaseCallMeta):
             num_threads = len(converted_data) / self.max_example_per_thread
             chunks = [converted_data[x:x + self.max_example_per_thread] for x in
                       range(0, len(converted_data), self.max_example_per_thread)]
-            print(f" Data too large, splitting data into {num_threads} chunk, each chunk is {len(chunks[0])}"
-                  f" Processing with multithread...")
+            tqdm.write(f" Data too large, splitting data into {num_threads} chunk, each chunk is {len(chunks[0])}"
+                       f" Processing with multithread...")
             with ThreadPoolExecutor(max_workers=num_threads) as executor:
                 futures = []
                 finished_task = 0
@@ -253,9 +254,10 @@ class DataParser(metaclass=ForceBaseCallMeta):
                         with lock:
                             translated_data += future.result()
                             finished_task += 1
-                            print("Task finished, adding translated data to result")
+                            tqdm.write("Task finished, adding translated data to result")
                     else:
-                        print(f"Task failed, \nrestarting thread when others finished")
+                        tqdm.write(f"Task failed with the following error {future.exception()}\n"
+                                   f" \nrestarting thread when others finished")
                         pass
 
                 for idx, chunk in enumerate(chunks):
@@ -278,7 +280,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
                     for future_dict in futures:
                         # If exception occurs in one of the thread, restart the thread with its specific chunk
                         if future_dict['future'].exception():
-                            print(
+                            tqdm.write(
                                 f" Thread {future_dict['idx']} failed, restarting thread with chunk {future_dict['idx']}")
                             backup_future_chunk = executor.submit(self.translate_converted, chunks[future_dict['idx']],
                                                                   f"Backup chunk {future_dict['idx']}", Translator())
@@ -312,7 +314,7 @@ class DataParser(metaclass=ForceBaseCallMeta):
             if not desc:
                 raise f" Connection timeout, please provide better connection"
             else:
-                print(f" Connection timeout from thread {desc}")
+                tqdm.write(f" Connection timeout from thread {desc}")
                 raise f" Connection timeout raise from thread {desc}"
 
     @abstractmethod

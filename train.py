@@ -83,8 +83,14 @@ def parse_arguments():
     training_group.add_argument("--llm_int8_enable_fp32_cpu_offload", action='store_true', help="")
     training_group.add_argument("--resume_from_checkpoint", type=str,
                                 default=None, help="If the training should continue from a checkpoint folder.")
-    training_group.add_argument("--checkpointing_steps", type=str, default=None, help="How often should we save"
-                                                                                      "state for resume")
+    training_group.add_argument("--checkpointing_steps", type=str, default=None,
+                                help="How often should we save state in steps for resume")
+    training_group.add_argument("--checkpoint_at_max_time", type=float, default=None,
+                                help="How often in hours should we save state in hours for resume")
+    training_group.add_argument('--override_last_cpkt_step', action='store_true',
+                                help="Override last cpkt step and epoch")
+    training_group.add_argument('--convert_cpkt', action='store_true', help='Convert checkpoint into model and push to'
+                                                                            'hub')
 
     dataloader_group = parser.add_argument_group("Dataloader Arguments")
     dataloader_group.add_argument("--dataset_name", type=str, default="Instruction_en-vn_mix", help="Dataset name")
@@ -98,24 +104,13 @@ def parse_arguments():
     dataloader_group.add_argument("--do_group_texts", action="store_true", help="Do group text, great for pretraining phase")
     dataloader_group.add_argument("--model_max_length", type=int, default=1024, help="The model maximum length")
     dataloader_group.add_argument("--context_length", type=int, default=768, help="The model maximum context length")
-    dataloader_group.add_argument("--train_file", nargs='+', type=str, default=[
-        r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrca_translatedFormated.json",
-        r"src/data/features/final_storge_converted/Open-Orca_OpenOrca/OpenOrcaFormated.json",
-        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json",
-        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json"
-    ], help="List of training files")
+    dataloader_group.add_argument("--train_file", nargs='+', type=str, default=None, help="List of training files")
     dataloader_group.add_argument("--each_train_file_percentage", nargs='+', type=int, default=None,
                                   help="The percentage weight of each train files")
 
-    dataloader_group.add_argument("--val_file", nargs='+', type=str, default=[
-        r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70kFormated.json",
-        r"src/data/features/final_storge_converted/WizardLM_WizardLM_evol_instruct_70k/WizardLM_70k_translatedFormated.json"
-    ], help="List of validation files")
+    dataloader_group.add_argument("--val_file", nargs='+', type=str, default=None, help="List of validation files")
 
-    dataloader_group.add_argument("--test_file", nargs='+', type=str, default=[
-        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleaned_translatedFormated.json",
-        r"src/data/features/final_storge_converted/yahma_alpaca-cleaned/AlpacaCleanedFormated.json"
-    ], help="List of test files")
+    dataloader_group.add_argument("--test_file", nargs='+', type=str, default=None, help="List of test files")
 
     dataloader_group.add_argument("--max_train_samples", type=int, default=10000,
                                   help="Maximum number of training samples")
@@ -129,7 +124,7 @@ def parse_arguments():
     dataloader_group.add_argument("--do_perplexity_eval", action='store_true', help="Flag to enable perplexity computation, relevant when using casual-LM")
     dataloader_group.add_argument("--max_eval_generative_samples", type=int, default=50, help="Max generative examplew for manual evaluation")
     dataloader_group.add_argument("--do_generative_eval", action="store_true", help="Flag to enable model.generate eval")
-    dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=500, help="Max evaluation examples for perplexity evaluation")
+    dataloader_group.add_argument("--max_eval_perplexity_samples", type=int, default=50, help="Max evaluation examples for perplexity evaluation")
 
     generation_group = parser.add_argument_group("Generation Arguments")
     generation_group.add_argument("--top_k", type=int, default=50, help="Top-k value ")

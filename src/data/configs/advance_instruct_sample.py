@@ -60,7 +60,7 @@ class AdvanceInstructSample:
     def get_example(self,
                     inputs_column: str="prompt",
                     targets_column: str="target",
-                    system_prefix: str="@@@@@@@@@@@@@ System prompt:",
+                    system_prefix: str="",
                     question_prefix: str="####### Instruction:",
                     response_prefix: str="%%%%%%% Response:",
                     is_training: bool=True,

@@ -4,6 +4,7 @@ import os
 import random
 import shutil
 import logging
+import time
 import warnings
 import datetime
 from typing import List
@@ -93,7 +94,6 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
-        "device_map": "auto",
         "offload_folder": "offload_inf",
         "torch_dtype": model_dtype,
         "use_cache": True,
@@ -148,7 +148,6 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
-                                               device_map="auto",
                                                offload_folder="offload_inf",
                                                torch_dtype=model_dtype,
                                                max_memory=max_memory
@@ -281,6 +280,7 @@ class TorchTracemalloc:
 @record
 @timeit
 def train(training_args, qa_dataloader, qa_dataloader_instance):
+    start_time = time.time()
     send_example_telemetry(training_args.dataset_name, training_args)
 
     accelerator_log_kwargs = {}
@@ -380,6 +380,9 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     resume_from_checkpoint = training_args.resume_from_checkpoint
     report_to = training_args.report_to
     with_tracking = training_args.with_tracking
+    convert_cpkt = training_args.convert_cpkt
+    checkpointing_steps = training_args.checkpointing_steps
+    checkpoint_at_max_time = training_args.checkpoint_at_max_time
 
     set_seed(seed)
 
@@ -653,18 +656,17 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if training_args.checkpointing_steps:
-        # Register the LR scheduler
+    if checkpointing_steps or checkpoint_at_max_time or resume_from_checkpoint:
         accelerator.register_for_checkpointing(lr_scheduler)
         # Parse out whether we are saving every epoch or after a certain number of batches
-        if hasattr(training_args.checkpointing_steps, "isdigit"):
-            if training_args.checkpointing_steps == "epoch":
-                checkpointing_steps = training_args.checkpointing_steps
-            elif training_args.checkpointing_steps.isdigit():
-                checkpointing_steps = int(training_args.checkpointing_steps)
+        if hasattr(checkpointing_steps, "isdigit"):
+            if checkpointing_steps == "epoch":
+                checkpointing_steps = checkpointing_steps
+            elif checkpointing_steps.isdigit():
+                checkpointing_steps = int(checkpointing_steps)
             else:
                 raise ValueError(
-                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{training_args.checkpointing_steps}` passed."
+                    f"Argument `checkpointing_steps` must be either a number or `epoch`. `{checkpointing_steps}` passed."
                 )
         else:
             checkpointing_steps = None
@@ -693,16 +695,62 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             dirs = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
             dirs.sort(key=os.path.getctime)
             path = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
-        # Extract `epoch_{i}` or `step_{i}`
-        training_difference = os.path.splitext(path)[0]
 
-        if "epoch" in training_difference:
-            starting_epoch = int(training_difference.replace("epoch_", "")) + 1
-            resume_step = None
+        if not training_args.override_last_cpkt_step:
+            # Extract `epoch_{i}` or `step_{i}`
+            training_difference = os.path.splitext(path)[0]
+
+            if "epoch" in training_difference:
+                starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+                resume_step = None
+            else:
+                resume_step = int(training_difference.replace("step_", ""))
+                starting_epoch = resume_step // len(train_dataloader)
+                resume_step -= starting_epoch * len(train_dataloader)
         else:
-            resume_step = int(training_difference.replace("step_", ""))
-            starting_epoch = resume_step // len(train_dataloader)
-            resume_step -= starting_epoch * len(train_dataloader)
+            resume_step = None
+
+    def save_push():
+        accelerator.wait_for_everyone()
+        unwrapped_adapter = accelerator.unwrap_model(adapter)
+        unwrapped_adapter.save_pretrained(dataset_name,
+                                          is_main_process=accelerator.is_main_process,
+                                          save_function=accelerator.save,
+                                          state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                                          )
+        if accelerator.is_main_process:
+            unwrapped_adapter.push_to_hub(
+                "1TuanPham/"
+                + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                    "/",
+                    "_"),
+                state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
+                use_auth_token=True,
+            )
+        accelerator.wait_for_everyone()
+        if with_tracking:
+            accelerator.end_training()
+
+    def save_state():
+        nonlocal checkpoint_at_max_time
+        output_cpkt_dir = f"step_{overall_step}"
+        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
+        accelerator.save_state(output_dir)
+        checkpoint_at_max_time += training_args.checkpoint_at_max_time
+        if accelerator.is_main_process and training_args.log_weights_cpkt:
+            if training_args.with_tracking and training_args.log_weights_cpkt:
+                if training_args.report_to == "wandb":
+                    wandb_artifact = wandb.Artifact(
+                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
+                        type='model',
+                        description="Model checkpoint for VQA")
+            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
+            wandb_artifact.add_dir(output_dir)
+            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
+
+    if resume_from_checkpoint and convert_cpkt:
+        save_push()
+        return True
 
     progress_bar_epoch = tqdm(total=num_epochs-starting_epoch, desc=f"Training progress on process {accelerator.process_index}",
                               position=accelerator.process_index,
@@ -733,6 +781,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     lr_scheduler.step()
                     optimizer.zero_grad()
 
+                overall_step += 1
+                progress_bar_step.update(1)
+                elapsed_time = (time.time() - start_time) / 3600
+
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     rate = progress_bar_step.format_dict["rate"]
@@ -751,27 +803,17 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                         )
                     completed_steps += 1
                     tqdm.write(f"\n Current loss: {current_loss}, step: {completed_steps}")
-                    progress_bar_step.desc = f"Training progress epoch {epoch} process {accelerator.process_index}|L-{round(current_loss, 4)}-S-{completed_steps}-T-{round(remaining/60/60, 3)}h"
+                    progress_bar_step.desc = f"Training progress E:{epoch}|P:{accelerator.process_index}|L:{round(current_loss, 4)}|S:{completed_steps}|T:{round(remaining/60/60, 3)}h|Elapsed:{round(elapsed_time, 2)}"
                     del loss, outputs, batch
-
-                overall_step += 1
-                progress_bar_step.update(1)
 
                 if isinstance(checkpointing_steps, int):
                     if overall_step % checkpointing_steps == 0:
-                        output_cpkt_dir = f"step_{overall_step}"
-                        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
-                        accelerator.save_state(output_dir)
-                        if accelerator.is_main_process and training_args.log_weights_cpkt:
-                            if training_args.with_tracking and training_args.log_weights_cpkt:
-                                if training_args.report_to == "wandb":
-                                    wandb_artifact = wandb.Artifact(
-                                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
-                                        type='model',
-                                        description="Model checkpoint for VQA")
-                            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
-                            wandb_artifact.add_dir(output_dir)
-                            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
+                        save_state()
+
+                if isinstance(checkpoint_at_max_time, float):
+                    if elapsed_time >= checkpoint_at_max_time:
+                        save_state()
+                        checkpoint_at_max_time += training_args.checkpoint_at_max_time
 
         progress_bar_epoch.update(1)
 
@@ -801,27 +843,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             output_dir = f"epoch_{epoch}"
             output_dir = os.path.join("src/models/runs/checkpoints", output_dir)
             accelerator.save_state(output_dir)
-
-        def save_push():
-            accelerator.wait_for_everyone()
-            unwrapped_adapter = accelerator.unwrap_model(adapter)
-            unwrapped_adapter.save_pretrained(dataset_name,
-                                              is_main_process=accelerator.is_main_process,
-                                              save_function=accelerator.save,
-                                              state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-                                              )
-            if accelerator.is_main_process:
-                unwrapped_adapter.push_to_hub(
-                    "1TuanPham/"
-                    + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
-                        "/",
-                        "_"),
-                    state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
-                    use_auth_token=True,
-                )
-            accelerator.wait_for_everyone()
-            if with_tracking:
-                accelerator.end_training()
 
         if num_epochs - starting_epoch == 1:
             save_push()

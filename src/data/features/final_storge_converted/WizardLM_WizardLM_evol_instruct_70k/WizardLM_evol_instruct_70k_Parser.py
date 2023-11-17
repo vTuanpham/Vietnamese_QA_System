@@ -1,12 +1,7 @@
-import json
 import sys
 import random
 sys.path.insert(0,r'./')
-import os
 from tqdm.auto import tqdm
-
-from typing import List, Dict, Union
-from functools import partialmethod
 
 from datasets import load_dataset
 
@@ -14,7 +9,7 @@ from src.data.features import DataParser
 from src.data.configs import AdvanceInstructSample, QA_TEMPLATE
 
 
-PARSER_TYPE = "WizardLM_20k_Filtered"
+PARSER_TYPE = "WizardLM_20k"
 
 
 class WizardLM70k(DataParser):
@@ -23,8 +18,6 @@ class WizardLM70k(DataParser):
                          parser_type=PARSER_TYPE,
                          do_translate=True,
                          no_translated_code=True,
-                         max_example_per_thread=300,
-                         large_chunks_threshold=3000
                          )
         self.target_config = AdvanceInstructSample
         self.target_fields = ['question_text', 'orig_answer_texts']
@@ -51,7 +44,7 @@ class WizardLM70k(DataParser):
                 data_dict['answer_lengths'] = None
                 data_converted.append(data_dict)
 
-        self.converted_data = data_converted[:20000]
+        self.converted_data = data_converted
 
         pass
 

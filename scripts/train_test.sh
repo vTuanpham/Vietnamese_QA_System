@@ -2,33 +2,34 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --train_file "src/data/features/final_storge_converted/THUDM-webglm-qa/WebglmQA.json" \
         --each_train_file_percentage 100 \
         --val_file "src/data/features/final_storge_converted/THUDM-webglm-qa/WebglmQA.json" \
+        --test_file "src/data/features/final_storge_converted/THUDM-webglm-qa/WebglmQA.json" \
         --lora_r 64 \
-        --with_tracking \
         --output_dir "./" \
-        --log_weights_cpkt \
-        --dataset_name "Instruction_tune_8k_e3_en-vi" \
-        --model_name_or_path EleutherAI/gpt-neo-125m \
-        --checkpointing_steps 500 \
+        --dataset_name "WebglmQA_tuned" \
+        --model_name_or_path EleutherAI/pythia-410m-deduped-v0 \
+        --resume_from_checkpoint src/models/runs/checkpoints/step_1887 \
+        --checkpoint_at_max_time 0.2 \
+        --use_4bit \
         --shard_model \
         --max_model_shard_size 200MB \
         --max_train_samples 2000 \
         --max_eval_samples 500 \
         --train_batch_size 1 \
-        --num_epochs  2 \
+        --num_epochs  3 \
         --seed 56 \
-        --lr 3e-4 \
+        --lr 1e-4 \
         --warmup_steps 0 \
         --model_dtype bfloat16 \
-        --lora_dropout 0.05 \
-        --weight_decay 0 \
+        --lora_dropout 0.02 \
+        --weight_decay 0.1 \
         --model_type CAUSAL_LM \
         --minimum_free_spaces 1 \
-        --gradient_accumulation_steps 128 \
+        --gradient_accumulation_steps 64 \
         --generative_eval_batch_size 1 \
-        --max_eval_generative_samples 200 \
+        --max_eval_generative_samples 20 \
         --perplexity_eval_batch_size 1 \
         --max_eval_perplexity_samples 499 \
-        --lora_alpha 16 \
+        --lora_alpha 32 \
         --optim_name PagedAdamW8bit \
         --enable_model_offload \
         --gradient_checkpointing \
@@ -37,14 +38,13 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --max_model_shard_size 500MB \
         --do_perplexity_eval \
         --do_generative_eval \
-        --target_modules 'k_proj' 'v_proj' 'q_proj' 'out_proj' 'c_fc' 'c_proj' \
-        --no_split_module_classes "GPTNeoMLP" "LayerNorm" "GPTNeoSelfAttention" "GPTNeoAttention" "GPTNeoBlock" "Linear" \
+        --target_modules 'query_key_value' 'dense' 'dense_h_to_4h' 'dense_4h_to_h' \
+        --no_split_module_classes "GPTNeoXLayer" "GPTNeoXAttention" "GPTNeoXMLP" "GPTNeoXRotaryEmbedding" "LayerNorm" "Linear" "Embedding" \
         --model_max_length 1256 \
         --max_new_tokens 256 \
         --context_length 1256 \
         --response_template " %%%%%%% Response:" \
         --print_model_key \
-        --deep_speed_inf \
         --lr_sheduler_name cosine \
         --merge_weight_eval \
         --auto_kernel_injection
