@@ -94,7 +94,6 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
     adapter_path_file = os.path.join(adapter_save_path, adapter_name)
 
     offload_config = {
-        "device_map": "auto",
         "offload_folder": "offload_inf",
         "torch_dtype": model_dtype,
         "use_cache": True,
@@ -149,7 +148,6 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
-                                               device_map="auto",
                                                offload_folder="offload_inf",
                                                torch_dtype=model_dtype,
                                                max_memory=max_memory
@@ -658,7 +656,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if accelerator.distributed_type == DistributedType.TPU:
         adapter.tie_weights()
 
-    if checkpointing_steps:
+    if checkpointing_steps or checkpoint_at_max_time:
         # Register the LR scheduler
         accelerator.register_for_checkpointing(lr_scheduler)
         # Parse out whether we are saving every epoch or after a certain number of batches
@@ -734,6 +732,23 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         if with_tracking:
             accelerator.end_training()
 
+    def save_state():
+        nonlocal checkpoint_at_max_time
+        output_cpkt_dir = f"step_{overall_step}"
+        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
+        accelerator.save_state(output_dir)
+        checkpoint_at_max_time += training_args.checkpoint_at_max_time
+        if accelerator.is_main_process and training_args.log_weights_cpkt:
+            if training_args.with_tracking and training_args.log_weights_cpkt:
+                if training_args.report_to == "wandb":
+                    wandb_artifact = wandb.Artifact(
+                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
+                        type='model',
+                        description="Model checkpoint for VQA")
+            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
+            wandb_artifact.add_dir(output_dir)
+            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
+
     if resume_from_checkpoint and convert_cpkt:
         save_push()
         return True
@@ -792,22 +807,14 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     progress_bar_step.desc = f"Training progress E:{epoch}|P:{accelerator.process_index}|L:{round(current_loss, 4)}|S:{completed_steps}|T:{round(remaining/60/60, 3)}h|Elapsed:{round(elapsed_time, 2)}"
                     del loss, outputs, batch
 
-                if isinstance(checkpointing_steps, int) or isinstance(checkpoint_at_max_time, float):
-                    if overall_step % checkpointing_steps == 0 or elapsed_time >= checkpoint_at_max_time:
-                        output_cpkt_dir = f"step_{overall_step}"
-                        output_dir = os.path.join("src/models/runs/checkpoints", output_cpkt_dir)
-                        accelerator.save_state(output_dir)
+                if isinstance(checkpointing_steps, int):
+                    if overall_step % checkpointing_steps == 0:
+                        save_state()
+
+                if isinstance(checkpoint_at_max_time, float):
+                    if elapsed_time >= checkpoint_at_max_time:
+                        save_state()
                         checkpoint_at_max_time += training_args.checkpoint_at_max_time
-                        if accelerator.is_main_process and training_args.log_weights_cpkt:
-                            if training_args.with_tracking and training_args.log_weights_cpkt:
-                                if training_args.report_to == "wandb":
-                                    wandb_artifact = wandb.Artifact(
-                                        name=f"{training_args.dataset_name}_{output_cpkt_dir}",
-                                        type='model',
-                                        description="Model checkpoint for VQA")
-                            accelerator.print(f"\nLogging checkpoint {output_dir} to wandb...\n")
-                            wandb_artifact.add_dir(output_dir)
-                            accelerator.get_tracker(name="wandb", unwrap=True).log_artifact(wandb_artifact)
 
         progress_bar_epoch.update(1)
 
