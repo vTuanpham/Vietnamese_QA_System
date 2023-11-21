@@ -296,7 +296,7 @@ class QADataloader:
 
         return dataloaders
 
-    def load_data(self, data_files: List[str], num_example: int=10000,
+    def load_data(self, data_files: List[str], num_example: int=100000,
                   split: str='train', get_example: bool=True,
                   do_perplexity_eval: bool=False, do_generative_eval: bool=False) -> AdvanceQa:
         """
@@ -310,31 +310,18 @@ class QADataloader:
         Returns:
             A dataset object loaded from all data_files that was divided equally
         """
-        if num_example:
-            dataset = AdvanceQa(json_file_paths=data_files,
-                                percentage_weights=self.each_train_file_percentage,
-                                num_examples=num_example,
-                                config_type=self.config_type,
-                                task_type=self.task_type,
-                                split=split,
-                                get_example=get_example,
-                                do_perplexity_eval=do_perplexity_eval,
-                                do_generative_eval= do_generative_eval,
-                                tokenizer=self.tokenizer,
-                                max_seq_length=self.model_max_length,
-                                )
-        else:
-            dataset = AdvanceQa(json_file_paths=data_files,
-                                percentage_weights=self.each_train_file_percentage,
-                                config_type=self.config_type,
-                                task_type=self.task_type,
-                                split=split,
-                                get_example=get_example,
-                                do_perplexity_eval=do_perplexity_eval,
-                                do_generative_eval=do_generative_eval,
-                                tokenizer=self.tokenizer,
-                                max_seq_length=self.model_max_length,
-                                )
+        dataset = AdvanceQa(json_file_paths=data_files,
+                            percentage_weights=self.each_train_file_percentage if split=='train' else None,
+                            num_examples=num_example,
+                            config_type=self.config_type,
+                            task_type=self.task_type,
+                            split=split,
+                            get_example=get_example,
+                            do_perplexity_eval=do_perplexity_eval,
+                            do_generative_eval= do_generative_eval,
+                            tokenizer=self.tokenizer,
+                            max_seq_length=self.model_max_length,
+                            )
 
         # Log a few random samples from the training set:
         for index in random.sample(range(len(dataset)), 3):

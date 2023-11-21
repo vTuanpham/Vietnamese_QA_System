@@ -591,7 +591,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if modules_to_save and use_8bit or use_4bit:
         pass
 
-    # model = torch.compile(model, mode="max-autotune")
     adapter = get_peft_model(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     adapter.print_trainable_parameters()
@@ -726,6 +725,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     "_"),
                 state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
                 use_auth_token=True,
+                private=True
             )
         accelerator.wait_for_everyone()
         if with_tracking:
