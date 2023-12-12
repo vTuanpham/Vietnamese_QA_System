@@ -676,17 +676,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     # We also need to keep track of the stating epoch so files are named properly
     starting_epoch = 0
 
-    # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
-    if with_tracking:
-        experiment_config = vars(training_args)
-        # TensorBoard cannot log Enums, need the raw value
-        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
-        accelerator.init_trackers(PROJECT_NAME,
-                                  config=experiment_config,
-                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{overall_step}"}}
-                                  )
-
     if resume_from_checkpoint:
         if resume_from_checkpoint is not None or resume_from_checkpoint != "":
             accelerator.print(f"Resumed from checkpoint: {resume_from_checkpoint}")
@@ -711,6 +700,17 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                 resume_step -= starting_epoch * len(train_dataloader)
         else:
             resume_step = None
+
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if with_tracking:
+        experiment_config = vars(training_args)
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
+        accelerator.init_trackers(PROJECT_NAME,
+                                  config=experiment_config,
+                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{resume_step if not resume_step else 0}"}}
+                                  )
 
     def save_push():
         accelerator.wait_for_everyone()
