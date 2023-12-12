@@ -682,7 +682,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         experiment_config = vars(training_args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
-        accelerator.init_trackers(PROJECT_NAME, experiment_config)
+        accelerator.init_trackers(PROJECT_NAME,
+                                  config=experiment_config,
+                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{overall_step}"}}
+                                  )
 
     if resume_from_checkpoint:
         if resume_from_checkpoint is not None or resume_from_checkpoint != "":
