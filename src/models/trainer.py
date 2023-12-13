@@ -675,6 +675,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     overall_step = 0
     # We also need to keep track of the stating epoch so files are named properly
     starting_epoch = 0
+    resume_step = None
 
     if resume_from_checkpoint:
         if resume_from_checkpoint is not None or resume_from_checkpoint != "":
@@ -709,7 +710,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
         accelerator.init_trackers(PROJECT_NAME,
                                   config=experiment_config,
-                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{resume_step if not resume_step else 0}"}}
+                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{resume_step if resume_step is not None else 0}"}}
                                   )
 
     def save_push():
