@@ -174,6 +174,7 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
                 "weight_decay": 0.0,
             },
         ]
+
         return optimizer_grouped_parameters
     dataloaders = {}
     if distributed_type != DistributedType.DEEPSPEED:
@@ -193,7 +194,7 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
     else:
         # Creates Dummy Optimizer if `optimizer` was specified in the config
         # file else creates Adam Optimizer
-        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'])
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'], prepare_dict['weight_decay'])
         optimizer_cls = (
             getattr(bnb.optim, prepare_dict['optim_name'])
             if accelerator.state.deepspeed_plugin is None
@@ -454,25 +455,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
             accelerator.print("Your GPU supports bfloat16: accelerate training with bf16=True")
             accelerator.print("=" * 80)
 
-    if use_4bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_4bit=use_4bit,
-            bnb_4bit_use_double_quant=use_nested_quant,
-            bnb_4bit_compute_type=compute_dtype,
-            bnb_4bit_quant_type=bnb_4bit_quant_type,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    elif use_8bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_8bit=use_8bit,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    else:
-        quant_config = None
-        warnings.warn("\n   No quantization is applied")
-
     peft_config = LoraConfig(
         task_type=task_type,
         inference_mode=False,
@@ -483,16 +465,42 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         modules_to_save=modules_to_save
     )
 
-    # Copy the model to each device
-    # Naive pipeline parallelism
-    device_map = (
-        {"": f"xpu:{accelerator.local_process_index}"}
-        if is_xpu_available()
-        else {"": accelerator.local_process_index}
-    ) if accelerator.distributed_type != DistributedType.NO else "auto"
+    if accelerator.distributed_type != DistributedType.DEEPSPEED:
+        # Copy the model to each device
+        # Naive pipeline parallelism
+        device_map = (
+            {"": f"xpu:{accelerator.local_process_index}"}
+            if is_xpu_available()
+            else {"": accelerator.local_process_index}
+        ) if accelerator.distributed_type != DistributedType.NO else "auto"
 
-    with accelerator.main_process_first():
-        print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
+        with accelerator.main_process_first():
+            print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
+
+        if use_4bit:
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=use_4bit,
+                bnb_4bit_use_double_quant=use_nested_quant,
+                bnb_4bit_compute_type=compute_dtype,
+                bnb_4bit_quant_type=bnb_4bit_quant_type,
+                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+                llm_int8_threshold=6.0,
+            )
+        elif use_8bit:
+            quant_config = BitsAndBytesConfig(
+                load_in_8bit=use_8bit,
+                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+                llm_int8_threshold=6.0,
+            )
+        else:
+            quant_config = None
+            warnings.warn("\n   No quantization is applied")
+
+    else:
+        device_map = None
+        accelerator.print("\n Deeepspeed enabled, device_map will be handle by deepspeed\n")
+        quant_config = None
+        accelerator.print("\n Deepspeed enabled, quantization is not compatible with deepspeed\n")
 
     offload_config = {
         "device_map": device_map,
@@ -500,7 +508,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         "offload_state_dict": True,
         "low_cpu_mem_usage": True,
         "max_memory": max_memory
-    } if model_offload else {}
+    } if model_offload and accelerator.distributed_type != DistributedType.DEEPSPEED else {}
 
     full_model_config = {
         "quantization_config": quant_config,
