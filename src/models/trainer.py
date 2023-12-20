@@ -416,10 +416,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
     for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
         accelerator.print("\n==============================================================================\n")
-        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=False))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
         accelerator.print("\n==============================================================================\n")
         if idx == 10: break
 
