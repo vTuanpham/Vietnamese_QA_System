@@ -7,12 +7,10 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --output_dir "./" \
         --dataset_name "WebglmQA_tuned" \
         --model_name_or_path EleutherAI/pythia-410m-deduped-v0 \
-        --resume_from_checkpoint src/models/runs/checkpoints/step_1887 \
-        --checkpoint_at_max_time 0.2 \
         --use_4bit \
         --shard_model \
         --max_model_shard_size 200MB \
-        --max_train_samples 2000 \
+        --max_train_samples 500 \
         --max_eval_samples 500 \
         --train_batch_size 1 \
         --num_epochs  3 \

@@ -127,6 +127,17 @@ class AdvanceQa(Dataset):
         return self.full_json_data[idx]
 
 
+DEFAULT_PAD_TOKEN = "[PAD]"
+DEFAULT_EOS_TOKEN = "</s>"
+DEFAULT_BOS_TOKEN = "<s>"
+DEFAULT_UNK_TOKEN = "<unk>"
+
+DEFAULT_TOKENS = {  "pad_token": DEFAULT_PAD_TOKEN,
+                    "eos_token": DEFAULT_EOS_TOKEN,
+                    "bos_token": DEFAULT_BOS_TOKEN,
+                    "unk_token": DEFAULT_UNK_TOKEN}
+
+
 class QADataloader:
     def __init__(self,
                  model_name: str,
@@ -164,12 +175,20 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
+                                                       add_eos_token=True,
+                                                       add_bos_token=True,
                                                        max_model_length=self.model_max_length,
                                                        # GPT-2 is a model with absolute position embeddings so it’s
                                                        # usually advised to pad the inputs on the right rather than the left.
                                                        padding_side="left" if task_type == "CAUSAL_LM" and "gpt2" not in model_name else "right")
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        for key, value in DEFAULT_TOKENS.items():
+            if not getattr(self.tokenizer, key, None):
+                print(f" {model_name}'s tokenizer does not have {key} token, setting it to {value}\n")
+                setattr(self.tokenizer, key, value)
+
+        # if self.tokenizer.pad_token is None:
+        #     self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         global rank
         if dist.is_initialized():
@@ -404,6 +423,7 @@ class QADataloader:
             return_special_tokens_mask=True,
             truncation="longest_first",
             max_length=self.model_max_length if split == "train" or perplexity_eval else self.context_length,
+            add_special_tokens=True
             # return_overflowing_tokens=True,
             # return_length=True,
         )

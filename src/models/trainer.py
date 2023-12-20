@@ -922,7 +922,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                 )  # synced_gpus=True for Distributed training
                                 outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                 preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -1003,7 +1003,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                             )  # synced_gpus=True for Distributed training
                                         outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                         preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
