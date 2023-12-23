@@ -186,7 +186,6 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
             optimizer=optimizer,
             num_warmup_steps=prepare_dict["warmup_steps"],
             num_training_steps=prepare_dict["max_train_steps"],
-            last_epoch=prepare_dict["last_epoch"]
         )
         dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
             prepare_dict['train_dataloader'], optimizer, lr_scheduler
@@ -216,7 +215,6 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
                 optimizer=optimizer,
                 num_warmup_steps=prepare_dict["warmup_steps"],
                 num_training_steps=prepare_dict["max_train_steps"],
-                last_epoch=prepare_dict["last_epoch"]
             )
             adapter, dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
                 prepare_dict['adapter'], prepare_dict['train_dataloader'], optimizer, lr_scheduler
@@ -616,8 +614,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     "lr": lr,
                     "lr_sheduler_name": lr_sheduler_name,
                     "warmup_steps": warmup_steps,
-                    "max_train_steps": max_train_steps,
-                    "last_epoch": 0}
+                    "max_train_steps": max_train_steps}
 
     if do_eval:
         if perplexity_eval:
