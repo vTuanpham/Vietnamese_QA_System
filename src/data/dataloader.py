@@ -175,8 +175,7 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
-                                                       add_eos_token=True,
-                                                       add_bos_token=True,
+                                                       clean_up_tokenization_spaces=True,
                                                        max_model_length=self.model_max_length,
                                                        # GPT-2 is a model with absolute position embeddings so it’s
                                                        # usually advised to pad the inputs on the right rather than the left.
@@ -186,6 +185,7 @@ class QADataloader:
             if not getattr(self.tokenizer, key, None):
                 print(f" {model_name}'s tokenizer does not have {key} token, setting it to {value}\n")
                 setattr(self.tokenizer, key, value)
+                self.tokenizer.add_special_tokens({key: value})
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         global rank
@@ -408,12 +408,9 @@ class QADataloader:
     def tokenize_function(self, data: hfDataset, split: str=None,
                           perplexity_eval: bool=False):
         if not perplexity_eval:
-            if split != "eval" or "test":
-                inputs = data[self.text_column] + self.tokenizer.eos_token
-            else:
-                inputs = data[self.text_column]
+            inputs = data[self.text_column] + f" {self.tokenizer.eos_token}" if split != 'eval' or split != 'test' else data[self.text_column]
         elif self.task_type == "CAUSAL_LM":
-            inputs = data["perplexity"] + self.tokenizer.eos_token
+            inputs = data["perplexity"] + f" {self.tokenizer.eos_token}"
         else:
             warnings.warn(f"Cannot do perplexity eval on {self.task_type}")
             pass
@@ -424,7 +421,6 @@ class QADataloader:
             return_special_tokens_mask=True,
             truncation="longest_first",
             max_length=self.model_max_length if split == "train" or perplexity_eval else self.context_length,
-            add_special_tokens=True
             # return_overflowing_tokens=True,
             # return_length=True,
         )

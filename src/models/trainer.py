@@ -186,6 +186,7 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
             optimizer=optimizer,
             num_warmup_steps=prepare_dict["warmup_steps"],
             num_training_steps=prepare_dict["max_train_steps"],
+            last_epoch=prepare_dict["last_epoch"]
         )
         dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
             prepare_dict['train_dataloader'], optimizer, lr_scheduler
@@ -215,6 +216,7 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
                 optimizer=optimizer,
                 num_warmup_steps=prepare_dict["warmup_steps"],
                 num_training_steps=prepare_dict["max_train_steps"],
+                last_epoch=prepare_dict["last_epoch"]
             )
             adapter, dataloaders['train_dataloader'], optimizer, lr_scheduler = accelerator.prepare(
                 prepare_dict['adapter'], prepare_dict['train_dataloader'], optimizer, lr_scheduler
@@ -419,7 +421,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=False))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
+        accelerator.print("\n Label:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
         accelerator.print("\n==============================================================================\n")
         if idx == 10: break
 
@@ -614,7 +616,8 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                     "lr": lr,
                     "lr_sheduler_name": lr_sheduler_name,
                     "warmup_steps": warmup_steps,
-                    "max_train_steps": max_train_steps}
+                    "max_train_steps": max_train_steps,
+                    "last_epoch": 0}
 
     if do_eval:
         if perplexity_eval:
