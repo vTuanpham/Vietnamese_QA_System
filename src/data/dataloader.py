@@ -9,7 +9,7 @@ from itertools import chain
 sys.path.insert(0, r'./')
 
 from tqdm.contrib import tzip
-from typing import Optional, List, Union, Set, Any, Dict
+from typing import Optional, List, Union, Set
 
 import numpy as np
 
@@ -132,12 +132,10 @@ DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
-DEFAULT_TOKENS = {
-                    "pad_token": DEFAULT_PAD_TOKEN,
+DEFAULT_TOKENS = {  "pad_token": DEFAULT_PAD_TOKEN,
                     "eos_token": DEFAULT_EOS_TOKEN,
                     "bos_token": DEFAULT_BOS_TOKEN,
-                    "unk_token": DEFAULT_UNK_TOKEN,
-                }
+                    "unk_token": DEFAULT_UNK_TOKEN}
 
 
 class QADataloader:
@@ -177,8 +175,7 @@ class QADataloader:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name,
                                                        use_fast=use_fast_tokenizer,
                                                        trust_remote_code=True,
-                                                       add_eos_token=True,
-                                                       add_bos_token=True,
+                                                       clean_up_tokenization_spaces=True,
                                                        max_model_length=self.model_max_length,
                                                        # GPT-2 is a model with absolute position embeddings so it’s
                                                        # usually advised to pad the inputs on the right rather than the left.
@@ -188,9 +185,8 @@ class QADataloader:
             if not getattr(self.tokenizer, key, None):
                 print(f" {model_name}'s tokenizer does not have {key} token, setting it to {value}\n")
                 setattr(self.tokenizer, key, value)
+                self.tokenizer.add_special_tokens({key: value})
 
-        # if self.tokenizer.pad_token is None:
-        #     self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         global rank
         if dist.is_initialized():
@@ -412,9 +408,9 @@ class QADataloader:
     def tokenize_function(self, data: hfDataset, split: str=None,
                           perplexity_eval: bool=False):
         if not perplexity_eval:
-            inputs = data[self.text_column]
+            inputs = data[self.text_column] + f" {self.tokenizer.eos_token}" if split != 'eval' and split != 'test' else data[self.text_column]
         elif self.task_type == "CAUSAL_LM":
-            inputs = data["perplexity"]
+            inputs = data["perplexity"] + f" {self.tokenizer.eos_token}"
         else:
             warnings.warn(f"Cannot do perplexity eval on {self.task_type}")
             pass
@@ -425,7 +421,6 @@ class QADataloader:
             return_special_tokens_mask=True,
             truncation="longest_first",
             max_length=self.model_max_length if split == "train" or perplexity_eval else self.context_length,
-            add_special_tokens=True
             # return_overflowing_tokens=True,
             # return_length=True,
         )

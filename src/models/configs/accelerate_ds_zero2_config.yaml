@@ -1,6 +1,5 @@
 compute_environment: LOCAL_MACHINE
 deepspeed_config:
- gradient_accumulation_steps: 1
  gradient_clipping: 1.0
  offload_optimizer_device: none
  offload_param_device: none
@@ -14,5 +13,5 @@ main_process_port: null
 main_training_function: train
 mixed_precision: bf16
 num_machines: 1
-num_processes: 1
+num_processes: 2
 use_cpu: false

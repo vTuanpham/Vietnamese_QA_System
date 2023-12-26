@@ -9,8 +9,6 @@ import warnings
 import datetime
 from typing import List
 
-from src.utils import timeit
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["TORCHELASTIC_ERROR_FILE"] = "src/models/runs/logs/ERROR_file.txt"
 import sys
@@ -34,7 +32,6 @@ from torch.distributed.elastic.multiprocessing.errors import record
 
 from accelerate import Accelerator, dispatch_model
 from accelerate.logging import get_logger
-from accelerate.utils.memory import find_executable_batch_size
 from accelerate.utils import \
     (DistributedType,
      release_memory,
@@ -58,11 +55,11 @@ from transformers.trainer_pt_utils import get_parameter_names
 from transformers.utils import send_example_telemetry
 
 import bitsandbytes as bnb
-from peft import LoraConfig, TaskType, get_peft_model, PeftConfig, PeftModel, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from peft.utils.other import fsdp_auto_wrap_policy
 
 from src.models.model_utils import poor_man_llm_load
-from src.utils import in_notebook
+from src.utils import in_notebook, timeit, b2mb
 
 if in_notebook():
     try:
@@ -74,11 +71,6 @@ else:
 
 logger = get_logger(__name__)
 PROJECT_NAME = "Vietnamese_Instruct_LLM"
-
-
-# Converting Bytes to Megabytes
-def b2mb(x):
-    return int(x / 2**20)
 
 
 def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
@@ -161,7 +153,8 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
 
 
 def prepare_any(prepare_dict: dict, distributed_type, accelerator):
-    def get_grouped_parameters(adapter, weight_decay):
+    def get_grouped_parameters(adapter, weight_decay, is_deepspeed: bool=False):
+        if is_deepspeed: return adapter.parameters()
         decay_parameters = get_parameter_names(adapter, [nn.LayerNorm])
         decay_parameters = [name for name in decay_parameters if "bias" not in name]
         optimizer_grouped_parameters = [
@@ -194,7 +187,9 @@ def prepare_any(prepare_dict: dict, distributed_type, accelerator):
     else:
         # Creates Dummy Optimizer if `optimizer` was specified in the config
         # file else creates Adam Optimizer
-        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'], prepare_dict['weight_decay'])
+        optimizer_grouped_parameters = get_grouped_parameters(prepare_dict['adapter'],
+                                                              prepare_dict['weight_decay'],
+                                                              is_deepspeed=distributed_type == DistributedType.DEEPSPEED)
         optimizer_cls = (
             getattr(bnb.optim, prepare_dict['optim_name'])
             if accelerator.state.deepspeed_plugin is None
@@ -292,6 +287,20 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
     accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps,
                               **accelerator_log_kwargs)
+
+    # Get gradient accumulation steps from deepspeed config if available, else assign int value to deepspeed config if
+    # 'auto' was detected
+    if accelerator.state.deepspeed_plugin is not None:
+        try:
+            training_args.gradient_accumulation_steps = int(accelerator.state.deepspeed_plugin.deepspeed_config[
+                "gradient_accumulation_steps"
+            ])
+            accelerator.print(f" gradient_accumulation_steps was specified in the DS config, override the "
+                              f"GA from CMD args\n")
+        except ValueError:
+            accelerator.print(f" Deepspeed config gradient_accumulation_steps is auto,"
+                              f" switching to CMD args GA: {training_args.gradient_accumulation_steps}\n")
+
     accelerator.print(f"{AcceleratorState()}")
 
     # Make one log on every process with the configuration for debugging.
@@ -308,20 +317,13 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-    # LoRA attention dimension
     lora_r = training_args.lora_r
-    # Alpha parameter for LoRA scaling
     lora_alpha = training_args.lora_alpha
-    # Dropout probability for LoRA layers
     lora_dropout = training_args.lora_dropout
 
-    # Activate 4-bit precision base model loading
     use_4bit = training_args.use_4bit
-    # Compute dtype for 4-bit base models
     bnb_4bit_compute_dtype = training_args.bnb_4bit_compute_dtype
-    # Quantization type (fp4 or nf4)
     bnb_4bit_quant_type = training_args.bnb_4bit_quant_type
-    # Activate nested quantization for 4-bit base models (double quantization)
     use_nested_quant = training_args.use_nested_quant
 
     use_8bit = training_args.use_8bit

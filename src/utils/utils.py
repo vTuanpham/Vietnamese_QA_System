@@ -40,6 +40,9 @@ def set_seed(value):
     torch.use_deterministic_algorithms(True, warn_only=True)
     np.random.seed(value)
 
+# Converting Bytes to Megabytes
+def b2mb(x):
+    return int(x / 2**20)
 
 def timeit(func):
     @wraps(func)
