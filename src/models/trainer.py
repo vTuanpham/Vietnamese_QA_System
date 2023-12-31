@@ -419,10 +419,10 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
     for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
         accelerator.print("\n==============================================================================\n")
-        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=False))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        accelerator.print("\n Label:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
         accelerator.print("\n==============================================================================\n")
         if idx == 10: break
 
@@ -479,30 +479,28 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         with accelerator.main_process_first():
             print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
 
-        if use_4bit:
-            quant_config = BitsAndBytesConfig(
-                load_in_4bit=use_4bit,
-                bnb_4bit_use_double_quant=use_nested_quant,
-                bnb_4bit_compute_type=compute_dtype,
-                bnb_4bit_quant_type=bnb_4bit_quant_type,
-                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-                llm_int8_threshold=6.0,
-            )
-        elif use_8bit:
-            quant_config = BitsAndBytesConfig(
-                load_in_8bit=use_8bit,
-                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-                llm_int8_threshold=6.0,
-            )
-        else:
-            quant_config = None
-            warnings.warn("\n   No quantization is applied")
-
     else:
         device_map = None
         accelerator.print("\n Deeepspeed enabled, device_map will be handle by deepspeed\n")
+
+    if use_4bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=use_4bit,
+            bnb_4bit_use_double_quant=use_nested_quant,
+            bnb_4bit_compute_type=compute_dtype,
+            bnb_4bit_quant_type=bnb_4bit_quant_type,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=6.0,
+        )
+    elif use_8bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=use_8bit,
+            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+            llm_int8_threshold=6.0,
+        )
+    else:
         quant_config = None
-        accelerator.print("\n Deepspeed enabled, quantization is not compatible with deepspeed\n")
+        warnings.warn("\n   No quantization is applied")
 
     offload_config = {
         "device_map": device_map,
