@@ -479,28 +479,31 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         with accelerator.main_process_first():
             print(f"\nModel device map: {device_map} for process {accelerator.local_process_index}\n")
 
+        if use_4bit:
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=use_4bit,
+                bnb_4bit_use_double_quant=use_nested_quant,
+                bnb_4bit_compute_type=compute_dtype,
+                bnb_4bit_quant_type=bnb_4bit_quant_type,
+                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+                llm_int8_threshold=6.0,
+            )
+        elif use_8bit:
+            quant_config = BitsAndBytesConfig(
+                load_in_8bit=use_8bit,
+                llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
+                llm_int8_threshold=6.0,
+            )
+        else:
+            quant_config = None
+            warnings.warn("\n   No quantization is applied")
+
     else:
         device_map = None
         accelerator.print("\n Deeepspeed enabled, device_map will be handle by deepspeed\n")
-
-    if use_4bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_4bit=use_4bit,
-            bnb_4bit_use_double_quant=use_nested_quant,
-            bnb_4bit_compute_type=compute_dtype,
-            bnb_4bit_quant_type=bnb_4bit_quant_type,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    elif use_8bit:
-        quant_config = BitsAndBytesConfig(
-            load_in_8bit=use_8bit,
-            llm_int8_enable_fp32_cpu_offload=llm_int8_cpu_offload,
-            llm_int8_threshold=6.0,
-        )
-    else:
         quant_config = None
-        warnings.warn("\n   No quantization is applied")
+        accelerator.print("\n Deepspeed enabled, quantization is not compatible with deepspeed\n")
+
 
     offload_config = {
         "device_map": device_map,
@@ -930,7 +933,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                 )  # synced_gpus=True for Distributed training
                                 outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                 preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -1011,7 +1014,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                             )  # synced_gpus=True for Distributed training
                                         outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                         preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
