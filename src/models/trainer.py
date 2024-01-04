@@ -724,7 +724,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         if accelerator.is_main_process:
             unwrapped_adapter.push_to_hub(
                 "1TuanPham/"
-                + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                + f"{dataset_name}_{peft_config.peft_type}".replace(
                     "/",
                     "_"),
                 state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
