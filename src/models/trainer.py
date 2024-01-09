@@ -722,9 +722,16 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                           state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
                                           )
         if accelerator.is_main_process:
+            if resume_step:
+                if overall_step != 0:
+                    push_name_step = resume_step + overall_step
+                else:
+                    push_name_step = resume_step
+            else:
+                push_name_step = overall_step
             unwrapped_adapter.push_to_hub(
                 "1TuanPham/"
-                + f"{dataset_name}_{peft_config.peft_type}".replace(
+                + f"{dataset_name}_{peft_config.peft_type}_step_{push_name_step}".replace(
                     "/",
                     "_"),
                 state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
