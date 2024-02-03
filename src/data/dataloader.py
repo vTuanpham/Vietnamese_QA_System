@@ -9,7 +9,7 @@ from itertools import chain
 sys.path.insert(0, r'./')
 
 from tqdm.contrib import tzip
-from typing import Optional, List, Union, Set, Any, Dict
+from typing import Optional, List, Union, Set
 
 import numpy as np
 
@@ -20,7 +20,7 @@ from torch.utils.data.dataloader import DataLoader, Dataset
 
 from datasets import load_dataset
 from datasets import Dataset as hfDataset
-from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling, default_data_collator
+from transformers import AutoTokenizer, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
 from trl import DataCollatorForCompletionOnlyLM
 
 from src.data.configs import AdvanceQAExample, AdvanceInstructSample
@@ -165,6 +165,7 @@ class QADataloader:
                  do_generative_eval: bool=False,
                  do_group_texts: bool=False,
                  response_template: str=" %%%%%%% Response:",
+                 add_tokens_list: List[str]=None,
                  max_train_samples: Optional[int] = None,
                  max_eval_samples: Optional[int] = None,
                  max_predict_samples: Optional[int] = None,
@@ -180,12 +181,17 @@ class QADataloader:
                                                        # GPT-2 is a model with absolute position embeddings so it’s
                                                        # usually advised to pad the inputs on the right rather than the left.
                                                        padding_side="left" if task_type == "CAUSAL_LM" and "gpt2" not in model_name else "right")
-
+            
         for key, value in DEFAULT_TOKENS.items():
             if not getattr(self.tokenizer, key, None):
                 print(f" {model_name}'s tokenizer does not have {key} token, setting it to {value}\n")
                 setattr(self.tokenizer, key, value)
                 self.tokenizer.add_special_tokens({key: value})
+        
+        self.add_tokens_list = add_tokens_list
+        if self.add_tokens_list:
+            print(f"Adding {self.add_tokens_list} to the tokenizer\n")
+            self.tokenizer.add_tokens(self.add_tokens_list)
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         global rank
@@ -407,13 +413,23 @@ class QADataloader:
 
     def tokenize_function(self, data: hfDataset, split: str=None,
                           perplexity_eval: bool=False):
-        if not perplexity_eval:
-            inputs = data[self.text_column] + f" {self.tokenizer.eos_token}" if split != 'eval' or split != 'test' else data[self.text_column]
-        elif self.task_type == "CAUSAL_LM":
-            inputs = data["perplexity"] + f" {self.tokenizer.eos_token}"
+        # if not perplexity_eval:
+        #     inputs = data[self.text_column] + f" {self.tokenizer.eos_token}" if split != 'eval' or split != 'test' else data[self.text_column]
+        # elif self.task_type == "CAUSAL_LM":
+        #     inputs = data["perplexity"] + f" {self.tokenizer.eos_token}"
+        # else:
+        #     warnings.warn(f"Cannot do perplexity eval on {self.task_type}")
+        #     pass
+
+        if self.task_type == "CAUSAL_LM":
+            if perplexity_eval:
+                inputs = data["perplexity"] + f" {self.tokenizer.eos_token}"
+            elif split == 'train':
+                inputs = data[self.text_column] + f" {self.tokenizer.eos_token}"
+            else:
+                inputs = data[self.text_column]
         else:
-            warnings.warn(f"Cannot do perplexity eval on {self.task_type}")
-            pass
+            inputs = data[self.text_column]
 
         inp_tokens = self.tokenizer(
             inputs,
