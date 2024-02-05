@@ -6,13 +6,9 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --lora_r 64 \
         --output_dir "./" \
         --dataset_name "WebglmQA_tuned" \
-        --model_name_or_path EleutherAI/pythia-410m-deduped-v0 \
-        --resume_from_checkpoint src/models/runs/checkpoints/step_1887 \
-        --checkpoint_at_max_time 0.2 \
+        --model_name_or_path "EleutherAI/pythia-410m-deduped-v0" \
         --use_4bit \
-        --shard_model \
-        --max_model_shard_size 200MB \
-        --max_train_samples 2000 \
+        --max_train_samples 5000 \
         --max_eval_samples 500 \
         --train_batch_size 1 \
         --num_epochs  3 \
@@ -24,13 +20,13 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --weight_decay 0.1 \
         --model_type CAUSAL_LM \
         --minimum_free_spaces 1 \
-        --gradient_accumulation_steps 64 \
+        --gradient_accumulation_steps 128 \
         --generative_eval_batch_size 1 \
-        --max_eval_generative_samples 20 \
+        --max_eval_generative_samples 10 \
         --perplexity_eval_batch_size 1 \
-        --max_eval_perplexity_samples 499 \
-        --lora_alpha 32 \
-        --optim_name PagedAdamW8bit \
+        --max_eval_perplexity_samples 300 \
+        --lora_alpha 128 \
+        --optim_name PagedLion8bit \
         --enable_model_offload \
         --gradient_checkpointing \
         --do_eval \
@@ -39,16 +35,19 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file "src/models/configs/confi
         --do_perplexity_eval \
         --do_generative_eval \
         --target_modules 'query_key_value' 'dense' 'dense_h_to_4h' 'dense_4h_to_h' \
-        --no_split_module_classes "GPTNeoXLayer" "GPTNeoXAttention" "GPTNeoXMLP" "GPTNeoXRotaryEmbedding" "LayerNorm" "Linear" "Embedding" \
+        --modules_to_save 'embed_in' 'embed_out' \
+        --no_split_module_classes "GPTNeoXLayer" "GPTNeoXAttention" "GPTNeoXMLP" "GPTNeoXRotaryEmbedding" \
         --model_max_length 1256 \
         --max_new_tokens 256 \
         --context_length 1256 \
-        --response_template " %%%%%%% Response:" \
+        --response_template "%%%%%%% Response:" \
+        --add_tokens_list "####### Instruction:" "%%%%%%% Response:" \
         --print_model_key \
         --lr_sheduler_name cosine \
         --merge_weight_eval \
+        --repetition_penalty 1.2 \
+        --no_repeat_ngram_size 3 \
         --auto_kernel_injection
-#        --repetition_penalty 1.2 \
 #        --no_repeat_ngram_size 3 \
 #        --top_k 80 \
 #        --top_p 0.96 \

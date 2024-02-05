@@ -100,6 +100,7 @@ def parse_arguments():
     dataloader_group.add_argument("--text_column", type=str, default="prompt", help="Text column")
     dataloader_group.add_argument("--label_column", type=str, default="target", help="Label column")
     dataloader_group.add_argument("--response_template", type=str, default=" %%%%%%% Response:", help="Response template prefix for DataCollatorForCompletionOnlyLM")
+    dataloader_group.add_argument("--add_tokens_list", nargs='+', type=str, default=None, help="List of special tokens to add to the tokenizer")
     dataloader_group.add_argument("--block_size", type=int, default=768, help="Block size for group text function")
     dataloader_group.add_argument("--do_group_texts", action="store_true", help="Do group text, great for pretraining phase")
     dataloader_group.add_argument("--model_max_length", type=int, default=1024, help="The model maximum length")
@@ -240,6 +241,7 @@ if __name__=="__main__":
         "model_max_length": args.model_max_length,
         "context_length": args.context_length,
         "response_template": args.response_template,
+        "add_tokens_list": args.add_tokens_list,
         "max_eval_generative_samples": args.max_eval_generative_samples,
         "max_eval_perplexity_samples": args.max_eval_perplexity_samples
     }
