@@ -83,8 +83,8 @@ def b2mb(x):
 
 def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
                   adapter_save_path: str, adapter_name: str, main_process: bool,
-                  model_type: str="CAUSAL_LM", model_dtype=None, shard_model: bool=False,
-                  max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
+                  embedding_size: int, model_type: str="CAUSAL_LM", model_dtype=None,
+                  shard_model: bool=False, max_memory: dict={0: "0.3GB"}, max_shard_size: str="500MB",
                   no_split_module_classes: List[str]=None, accelerator=None):
     peft_adapter.save_pretrained(adapter_save_path,
                                  is_main_process=accelerator.is_main_process,
@@ -145,6 +145,7 @@ def merge_adapter(base_model_name: str, peft_adapter: PeftModel,
     )
 
     base_model = dispatch_model(base_model, device_map=device_map, offload_dir="offload_inf")
+    base_model.resize_token_embeddings(embedding_size)
 
     model_to_merge = PeftModel.from_pretrained(base_model,
                                                adapter_path_file,
@@ -413,15 +414,27 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
 
     tokenizer = qa_dataloader.tokenizer
 
-    accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task")
+    accelerator.print(" Print out a couple samples for tokenizer compatibility check for multilingual task\n")
+    accelerator.print(" Check for perplexity eval")
     for idx, data in enumerate(iter(qa_dataloader_instance['test']['perplexity_eval'])):
         accelerator.print("\n==============================================================================\n")
-        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=True))
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=False))
         labels = data['labels'].cpu().numpy()
         labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
-        accelerator.print("\n Response:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=True))
+        accelerator.print("\n Label:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
         accelerator.print("\n==============================================================================\n")
-        if idx == 10: break
+        if idx == 5: break
+    
+    accelerator.print(" Check for generative eval")
+    for idx, data in enumerate(iter(qa_dataloader_instance['test']['generative_eval'])):
+        accelerator.print("\n==============================================================================\n")
+        accelerator.print("\n Input: "+qa_dataloader.tokenizer.decode(data['input_ids'][0], skip_special_tokens=False))
+        # labels = data['labels'].cpu().numpy()
+        # labels = np.where(labels != -100, labels, qa_dataloader.tokenizer.pad_token_id)
+        # accelerator.print("\n Label:"+qa_dataloader.tokenizer.decode(labels[0], skip_special_tokens=False))
+        # accelerator.print("\n==============================================================================\n")
+        accelerator.print(f"\n label: {qa_dataloader.dataset['eval'][idx][label_column]}\n")
+        if idx == 5: break
 
     try:
         config = AutoConfig.from_pretrained(
@@ -570,6 +583,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     accelerator.print(f"Model embedding size: {embedding_size}")
     accelerator.print(f"Tokenizer vocab size: {len(tokenizer)}")
     if len(tokenizer) > embedding_size:
+        accelerator.print(f"Resizing token embeddings from {embedding_size} to {len(tokenizer)}")
         base_model.resize_token_embeddings(len(tokenizer))
 
     # Please enable gradient_checkpointing at all cost, this will save your life
@@ -587,11 +601,6 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     if print_model_key:
         accelerator.print(base_model)
 
-    # TODO: For cast weights to fp32
-    if modules_to_save and use_8bit or use_4bit:
-        pass
-
-    # model = torch.compile(model, mode="max-autotune")
     adapter = get_peft_model(base_model, peft_config=peft_config, adapter_name=dataset_name)
     if gradient_checkpointing: adapter.gradient_checkpointing_enable() # Double check!
     adapter.print_trainable_parameters()
@@ -676,14 +685,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
     overall_step = 0
     # We also need to keep track of the stating epoch so files are named properly
     starting_epoch = 0
-
-    # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
-    if with_tracking:
-        experiment_config = vars(training_args)
-        # TensorBoard cannot log Enums, need the raw value
-        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
-        accelerator.init_trackers(PROJECT_NAME, experiment_config)
+    resume_step = None
 
     if resume_from_checkpoint:
         if resume_from_checkpoint is not None or resume_from_checkpoint != "":
@@ -710,6 +712,17 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
         else:
             resume_step = None
 
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if with_tracking:
+        experiment_config = vars(training_args)
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_sheduler_name"].value
+        accelerator.init_trackers(PROJECT_NAME,
+                                  config=experiment_config,
+                                  init_kwargs={"wandb": {"name": f"{dataset_name}_completed_step{resume_step if resume_step is not None else 0}"}}
+                                  )
+
     def save_push():
         accelerator.wait_for_everyone()
         unwrapped_adapter = accelerator.unwrap_model(adapter)
@@ -719,13 +732,21 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                           state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
                                           )
         if accelerator.is_main_process:
+            if resume_step:
+                if overall_step != 0:
+                    push_name_step = resume_step + overall_step
+                else:
+                    push_name_step = resume_step
+            else:
+                push_name_step = overall_step
             unwrapped_adapter.push_to_hub(
                 "1TuanPham/"
-                + f"{dataset_name}_{model_name_or_path}_{peft_config.peft_type}_{peft_config.task_type}".replace(
+                + f"{dataset_name}_{peft_config.peft_type}_step_{push_name_step}".replace(
                     "/",
                     "_"),
                 state_dict=accelerator.get_state_dict(unwrapped_adapter, unwrap=False),
                 use_auth_token=True,
+                private=True
             )
         accelerator.wait_for_everyone()
         if with_tracking:
@@ -772,6 +793,11 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                      position=accelerator.process_index,
                                      colour="blue")
             for step, batch in enumerate(active_dataloader):
+                # Print out the actual words of each batch
+                # input_ids = batch['input_ids'][0]
+                # decoded_inputs = tokenizer.decode(input_ids, skip_special_tokens=False)
+                # accelerator.print("Actual words of each batch:")
+                # accelerator.print(decoded_inputs)
                 with accelerator.accumulate(adapter):
                     outputs = adapter(**batch)
                     loss = outputs.loss
@@ -864,7 +890,9 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                                     max_memory=max_memory,
                                                     max_shard_size=max_model_shard_size,
                                                     no_split_module_classes=no_split_module_classes,
-                                                    accelerator=accelerator)
+                                                    accelerator=accelerator,
+                                                    embedding_size=len(qa_dataloader.tokenizer)
+                                                    )
                 else:
                     warnings.warn(
                         f"The model {model_name_or_path} is gptq quantized and cannot be merged to LORA layers.\n"
@@ -918,7 +946,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                 )  # synced_gpus=True for Distributed training
                                 outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                 preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))
@@ -999,7 +1027,7 @@ def train(training_args, qa_dataloader, qa_dataloader_instance):
                                             )  # synced_gpus=True for Distributed training
                                         outputs = accelerator.pad_across_processes(outputs, dim=1, pad_index=tokenizer.pad_token_id)
                                         preds = accelerator.gather_for_metrics(outputs).detach().cpu().numpy()
-                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=True))
+                                        eval_preds.extend(tokenizer.batch_decode(preds, skip_special_tokens=False))
 
                     # Printing the GPU memory usage details such as allocated memory, peak memory, and total memory usage
                     accelerator.print("GPU Memory before entering the eval : {}".format(b2mb(tracemalloc.begin)))

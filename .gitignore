@@ -2,6 +2,11 @@
 ### Python template
 # Byte-compiled / optimized / DLL files
 __pycache__/
+*.Identifier
+*.db
+*.deb
+*.idea
+*.pyc
 *.py[cod]
 *$py.class
 *.json
